@@ -14,9 +14,6 @@ cdk.out
 # Test coverage
 coverage
 
-# Build output
-lib
-
 # IDE
 .vscode
 .idea
