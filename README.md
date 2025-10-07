@@ -192,30 +192,9 @@ Add the following secrets to your GitHub repository:
 
 ### 4. Update Trust Policy
 
-After deployment, update the GitHub deployment role's trust policy to restrict it to your specific repository:
+After deployment, update the GitHub deployment role's trust policy to restrict it to your specific repository. See [GITHUB_ACTIONS_SETUP.md](GITHUB_ACTIONS_SETUP.md) for detailed instructions.
 
-```json
-{
-  "Version": "2012-10-17",
-  "Statement": [
-    {
-      "Effect": "Allow",
-      "Principal": {
-        "Federated": "arn:aws:iam::YOUR_ACCOUNT_ID:oidc-provider/token.actions.githubusercontent.com"
-      },
-      "Action": "sts:AssumeRoleWithWebIdentity",
-      "Condition": {
-        "StringEquals": {
-          "token.actions.githubusercontent.com:aud": "sts.amazonaws.com"
-        },
-        "StringLike": {
-          "token.actions.githubusercontent.com:sub": "repo:YOUR_ORG/YOUR_REPO:*"
-        }
-      }
-    }
-  ]
-}
-```
+For a complete step-by-step guide, see **[GitHub Actions Setup Guide](GITHUB_ACTIONS_SETUP.md)**.
 
 ## Deploying Website Content
 
