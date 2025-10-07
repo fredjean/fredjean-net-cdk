@@ -11,9 +11,21 @@
     "test": "jest",
     "cdk": "cdk"
   },
-  "keywords": [],
-  "author": "",
+  "keywords": [
+    "aws",
+    "cdk",
+    "cloudfront",
+    "s3",
+    "static-website",
+    "infrastructure",
+    "github-actions"
+  ],
+  "author": "fredjean",
   "license": "ISC",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/fredjean/fredjean-net-cdk.git"
+  },
   "dependencies": {
     "aws-cdk-lib": "^2.219.0",
     "constructs": "^10.4.2",

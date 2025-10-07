@@ -2,6 +2,56 @@
 
 CDK package to create the infrastructure needed to deploy a static website on S3, fronted by CloudFront
 
+## Architecture
+
+```
+┌─────────────────┐
+│   GitHub        │
+│   Actions       │
+│   (CI/CD)       │
+└────────┬────────┘
+         │ OIDC Auth
+         ▼
+┌─────────────────────────────────────────────────────────────┐
+│                        AWS Account                          │
+│                                                             │
+│  ┌──────────────┐                                          │
+│  │     IAM      │                                          │
+│  │  Deployment  │                                          │
+│  │     Role     │                                          │
+│  └──────┬───────┘                                          │
+│         │                                                   │
+│         │ Upload Files    ┌─────────────────┐             │
+│         └────────────────►│       S3        │             │
+│                           │  Static Website │             │
+│         ┌─────────────────┤     Bucket      │             │
+│         │                 └────────┬────────┘             │
+│         │                          │                       │
+│         │ Create Invalidation      │ Origin               │
+│         │                          │                       │
+│         ▼                          ▼                       │
+│  ┌──────────────┐          ┌──────────────┐               │
+│  │  CloudFront  │◄─────────│    Origin    │               │
+│  │ Distribution │          │    Access    │               │
+│  │              │          │   Control    │               │
+│  └──────┬───────┘          └──────────────┘               │
+│         │                                                   │
+│         │ (Optional)                                        │
+│         ▼                                                   │
+│  ┌──────────────┐          ┌──────────────┐               │
+│  │     ACM      │          │   Route 53   │               │
+│  │ Certificate  │          │  DNS Records │               │
+│  └──────────────┘          └──────────────┘               │
+│                                                             │
+└─────────────────────────────────────────────────────────────┘
+         │
+         │ HTTPS
+         ▼
+┌─────────────────┐
+│   End Users     │
+└─────────────────┘
+```
+
 ## Overview
 
 This AWS CDK package creates all the infrastructure needed to host a static website using:
@@ -10,6 +60,40 @@ This AWS CDK package creates all the infrastructure needed to host a static webs
 - **ACM** for SSL/TLS certificates (optional)
 - **Route53** for DNS management (optional)
 - **IAM** roles for GitHub Actions deployment
+
+## Quick Start
+
+### 1. Clone and Install
+
+```bash
+git clone https://github.com/fredjean/fredjean-net-cdk.git
+cd fredjean-net-cdk
+npm install
+```
+
+### 2. Bootstrap AWS Account (first time only)
+
+```bash
+npx cdk bootstrap
+```
+
+### 3. Deploy the Infrastructure
+
+```bash
+npm run build
+npx cdk deploy
+```
+
+### 4. Upload Your Website
+
+After deployment, upload your static website files:
+
+```bash
+# Get the bucket name from CDK outputs
+aws s3 sync ./your-website s3://YOUR-BUCKET-NAME
+```
+
+That's it! Your website is now live on CloudFront.
 
 ## Prerequisites
 
