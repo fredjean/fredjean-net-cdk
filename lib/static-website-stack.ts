@@ -77,7 +77,7 @@ export class StaticWebsiteStack extends cdk.Stack {
       runtime: lambda.Runtime.NODEJS_22_X,
       handler: 'index.handler',
       code: lambda.Code.fromAsset(path.join(__dirname, '../lambda/contact-form'), {
-        exclude: ['*.test.mjs', 'node_modules', 'coverage'],
+        exclude: ['*.test.mjs', 'coverage', 'README.md', 'README-old.md', 'vitest.config.*'],
       }),
       timeout: cdk.Duration.seconds(10),
       memorySize: 128,

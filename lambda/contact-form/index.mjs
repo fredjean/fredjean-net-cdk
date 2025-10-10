@@ -163,12 +163,12 @@ async function sendEmail(contactData, sesClient) {
 /**
  * Main Lambda handler
  */
-export async function handler(event, context, sesClient = null) {
+export async function handler(event, context, sesClient) {
   // Use injected client for testing, or create new one
-  const client = sesClient || new SESClient({ region: CONFIG.region });
+  const client = (sesClient && typeof sesClient === 'object') ? sesClient : new SESClient({ region: CONFIG.region });
 
   // Add request ID to all logs
-  const requestId = context?.requestId || 'local';
+  const requestId = context?.awsRequestId || context?.requestId || 'local';
   const log = (level, message, data = {}) => {
     console.log(JSON.stringify({
       level,
