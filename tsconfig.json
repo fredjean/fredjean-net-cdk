@@ -23,5 +23,5 @@
     "forceConsistentCasingInFileNames": true,
     "resolveJsonModule": true
   },
-  "exclude": ["node_modules", "cdk.out", "**/*.d.ts", "**/*.js"]
+  "exclude": ["node_modules", "cdk.out", "test", "**/*.d.ts", "**/*.js"]
 }

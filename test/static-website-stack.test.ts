@@ -86,6 +86,147 @@ describe('StaticWebsiteStack', () => {
     });
   });
 
+  describe('Content Security Policy', () => {
+    let csp: string;
+
+    beforeEach(() => {
+      const app = new cdk.App();
+      const stack = new StaticWebsiteStack(app, 'TestStack');
+      const template = Template.fromStack(stack);
+
+      const policies = template.findResources('AWS::CloudFront::ResponseHeadersPolicy');
+      const policyKey = Object.keys(policies)[0];
+      const policy = policies[policyKey];
+      
+      csp = policy.Properties.ResponseHeadersPolicyConfig.SecurityHeadersConfig.ContentSecurityPolicy.ContentSecurityPolicy;
+    });
+
+    test('CSP is defined and not empty', () => {
+      expect(csp).toBeDefined();
+      expect(csp).not.toBe('');
+    });
+
+    test('allows self as default source', () => {
+      expect(csp).toContain("default-src 'self'");
+    });
+
+    test('allows self and unsafe-inline for scripts', () => {
+      expect(csp).toContain("script-src 'self' 'unsafe-inline'");
+    });
+
+    test('allows self and unsafe-inline for styles', () => {
+      expect(csp).toContain("style-src 'self' 'unsafe-inline'");
+    });
+
+    test('allows images from self, data URIs, and all HTTPS sources', () => {
+      expect(csp).toMatch(/img-src[^;]*'self'/);
+      expect(csp).toMatch(/img-src[^;]*data:/);
+      expect(csp).toMatch(/img-src[^;]*https:/);
+    });
+
+    describe('External Script Sources', () => {
+      test('allows jQuery from code.jquery.com', () => {
+        expect(csp).toMatch(/script-src[^;]*code\.jquery\.com/);
+      });
+
+      test('allows TypeKit from use.typekit.net', () => {
+        expect(csp).toMatch(/script-src[^;]*use\.typekit\.net/);
+      });
+
+      test('allows Google Analytics from www.google-analytics.com', () => {
+        expect(csp).toMatch(/script-src[^;]*www\.google-analytics\.com/);
+      });
+
+      test('allows Pingdom RUM from rum-static.pingdom.net', () => {
+        expect(csp).toMatch(/script-src[^;]*rum-static\.pingdom\.net/);
+      });
+
+      test('allows Disqus scripts from *.disqus.com', () => {
+        expect(csp).toMatch(/script-src[^;]*\*\.disqus\.com/);
+      });
+    });
+
+    describe('External Style Sources', () => {
+      test('allows TypeKit fonts styles from use.typekit.net', () => {
+        expect(csp).toMatch(/style-src[^;]*use\.typekit\.net/);
+      });
+    });
+
+    describe('Connect Sources for AJAX/Fetch', () => {
+      test('allows connections to self (including contact form via CloudFront)', () => {
+        expect(csp).toMatch(/connect-src[^;]*'self'/);
+      });
+
+      test('allows connections to Google Analytics', () => {
+        expect(csp).toMatch(/connect-src[^;]*www\.google-analytics\.com/);
+      });
+
+      test('allows connections to Disqus', () => {
+        expect(csp).toMatch(/connect-src[^;]*\*\.disqus\.com/);
+      });
+    });
+
+    describe('Font Sources', () => {
+      test('includes font-src directive', () => {
+        expect(csp).toMatch(/font-src/);
+      });
+
+      test('allows fonts from self', () => {
+        expect(csp).toMatch(/font-src[^;]*'self'/);
+      });
+
+      test('allows fonts from use.typekit.net', () => {
+        expect(csp).toMatch(/font-src[^;]*use\.typekit\.net/);
+      });
+
+      test('allows data URI fonts', () => {
+        expect(csp).toMatch(/font-src[^;]*data:/);
+      });
+    });
+
+    describe('Frame Sources', () => {
+      test('includes frame-src directive', () => {
+        expect(csp).toMatch(/frame-src/);
+      });
+
+      test('allows frames from disqus.com for comment embeds', () => {
+        expect(csp).toMatch(/frame-src[^;]*disqus\.com/);
+      });
+    });
+
+    test('CSP directives are properly semicolon-separated', () => {
+      // Split by semicolon and check each directive has proper format
+      const directives = csp.split(';').map(d => d.trim()).filter(d => d);
+      
+      expect(directives.length).toBeGreaterThan(0);
+      
+      directives.forEach(directive => {
+        // Each directive should have at least a name and a value
+        const parts = directive.split(/\s+/);
+        expect(parts.length).toBeGreaterThanOrEqual(2);
+        
+        // First part should be the directive name (ends with -src or is default-src)
+        expect(parts[0]).toMatch(/^(default-src|script-src|style-src|img-src|connect-src|font-src|frame-src)$/);
+      });
+    });
+
+    test('CSP has all required directives', () => {
+      const requiredDirectives = [
+        'default-src',
+        'script-src',
+        'style-src',
+        'img-src',
+        'connect-src',
+        'font-src',
+        'frame-src'
+      ];
+
+      requiredDirectives.forEach(directive => {
+        expect(csp).toMatch(new RegExp(`\\b${directive}\\b`));
+      });
+    });
+  });
+
   test('creates Origin Access Control', () => {
     const app = new cdk.App();
     const stack = new StaticWebsiteStack(app, 'TestStack');
@@ -144,6 +285,31 @@ describe('StaticWebsiteStack', () => {
         ],
       },
     });
+  });
+
+  test('GitHub deployment role has S3 bucket versioning permission', () => {
+    const app = new cdk.App();
+    const stack = new StaticWebsiteStack(app, 'TestStack');
+    const template = Template.fromStack(stack);
+
+    // Find the policy attached to the deployment role
+    const policies = template.findResources('AWS::IAM::Policy');
+    const deploymentRolePolicy = Object.values(policies).find(
+      (policy: any) => policy.Properties.PolicyName.includes('GitHubDeploymentRole')
+    );
+
+    expect(deploymentRolePolicy).toBeDefined();
+    const statements = deploymentRolePolicy?.Properties.PolicyDocument.Statement;
+    
+    // Find the statement with s3:PutBucketVersioning
+    const versioningStatement = statements.find(
+      (stmt: any) => Array.isArray(stmt.Action) 
+        ? stmt.Action.includes('s3:PutBucketVersioning')
+        : stmt.Action === 's3:PutBucketVersioning'
+    );
+
+    expect(versioningStatement).toBeDefined();
+    expect(versioningStatement.Effect).toBe('Allow');
   });
 
   test('creates stack with domain configuration', () => {

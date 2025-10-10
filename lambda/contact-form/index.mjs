@@ -189,9 +189,27 @@ export async function handler(event, context, sesClient) {
     // Parse request body
     let data;
     try {
-      data = typeof event.body === 'string' ? JSON.parse(event.body) : event.body;
+      const body = event.body;
+      const isBase64 = event.isBase64Encoded;
+      
+      // Decode base64 if needed
+      const decodedBody = isBase64 ? Buffer.from(body, 'base64').toString('utf-8') : body;
+      
+      // Determine content type
+      const contentType = event.headers?.['content-type'] || event.headers?.['Content-Type'] || '';
+      
+      if (contentType.includes('application/x-www-form-urlencoded')) {
+        // Parse URL-encoded form data
+        const params = new URLSearchParams(decodedBody);
+        data = Object.fromEntries(params.entries());
+        log('info', 'Parsed URL-encoded form data');
+      } else {
+        // Parse JSON
+        data = typeof decodedBody === 'string' ? JSON.parse(decodedBody) : decodedBody;
+        log('info', 'Parsed JSON data');
+      }
     } catch (error) {
-      log('warn', 'Invalid JSON in request body', { error: error.message });
+      log('warn', 'Invalid request body', { error: error.message });
       return createResponse(400, { error: 'Invalid request format' });
     }
 

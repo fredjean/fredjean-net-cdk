@@ -149,7 +149,7 @@ export class StaticWebsiteStack extends cdk.Stack {
             override: true,
           },
           contentSecurityPolicy: {
-            contentSecurityPolicy: "default-src 'self'; img-src 'self' data: https:; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline';",
+            contentSecurityPolicy: "default-src 'self'; img-src 'self' data: https:; script-src 'self' 'unsafe-inline' code.jquery.com use.typekit.net www.google-analytics.com rum-static.pingdom.net *.disqus.com; style-src 'self' 'unsafe-inline' use.typekit.net; connect-src 'self' www.google-analytics.com *.disqus.com; font-src 'self' use.typekit.net data:; frame-src disqus.com;",
             override: true,
           },
         },
@@ -265,6 +265,13 @@ export class StaticWebsiteStack extends cdk.Stack {
         resources: [
           `arn:aws:cloudfront::${this.account}:distribution/${this.distribution.distributionId}`,
         ],
+      })
+    );
+    this.deploymentRole.addToPolicy(
+      new iam.PolicyStatement({
+        effect: iam.Effect.ALLOW,
+        actions: ['s3:PutBucketVersioning'],
+        resources: [this.bucket.bucketArn],
       })
     );
 

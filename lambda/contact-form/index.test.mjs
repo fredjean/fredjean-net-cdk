@@ -155,7 +155,7 @@ describe('Contact Form Lambda', () => {
       vi.spyOn(console, 'log').mockImplementation(() => {});
     });
 
-    it('should handle valid contact form submission', async () => {
+    it('should handle valid contact form submission with JSON', async () => {
       const event = {
         body: JSON.stringify({
           name: 'John Doe',
@@ -163,6 +163,46 @@ describe('Contact Form Lambda', () => {
           phone: '555-1234',
           message: 'Test message',
         }),
+      };
+
+      const response = await handler(event, mockContext, mockSESClient);
+
+      expect(response.statusCode).toBe(200);
+      expect(JSON.parse(response.body)).toEqual({
+        message: 'Thank you for contacting us! Your message has been sent.',
+        success: true,
+      });
+      expect(mockSESClient.send).toHaveBeenCalledTimes(1);
+    });
+
+    it('should handle URL-encoded form data', async () => {
+      const formData = 'name=John+Doe&email=john%40example.com&phone=555-1234&message=Test+message';
+      const event = {
+        body: formData,
+        headers: {
+          'content-type': 'application/x-www-form-urlencoded',
+        },
+      };
+
+      const response = await handler(event, mockContext, mockSESClient);
+
+      expect(response.statusCode).toBe(200);
+      expect(JSON.parse(response.body)).toEqual({
+        message: 'Thank you for contacting us! Your message has been sent.',
+        success: true,
+      });
+      expect(mockSESClient.send).toHaveBeenCalledTimes(1);
+    });
+
+    it('should handle base64-encoded URL-encoded form data', async () => {
+      const formData = 'name=John+Doe&email=john%40example.com&phone=555-1234&message=Test+message';
+      const base64Body = Buffer.from(formData).toString('base64');
+      const event = {
+        body: base64Body,
+        isBase64Encoded: true,
+        headers: {
+          'content-type': 'application/x-www-form-urlencoded',
+        },
       };
 
       const response = await handler(event, mockContext, mockSESClient);
