@@ -1,0 +1,19 @@
+{
+  "name": "contact-form-lambda",
+  "version": "1.0.0",
+  "description": "Contact form handler for fredjean.net",
+  "type": "module",
+  "main": "index.mjs",
+  "scripts": {
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage"
+  },
+  "dependencies": {
+    "@aws-sdk/client-ses": "^3.0.0"
+  },
+  "devDependencies": {
+    "vitest": "^2.0.0",
+    "@vitest/coverage-v8": "^2.0.0"
+  }
+}

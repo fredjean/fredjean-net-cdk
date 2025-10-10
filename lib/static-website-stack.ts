@@ -7,20 +7,39 @@ import * as acm from 'aws-cdk-lib/aws-certificatemanager';
 import * as route53 from 'aws-cdk-lib/aws-route53';
 import * as targets from 'aws-cdk-lib/aws-route53-targets';
 import * as iam from 'aws-cdk-lib/aws-iam';
+import * as lambda from 'aws-cdk-lib/aws-lambda';
+import * as path from 'path';
 
 export interface StaticWebsiteStackProps extends cdk.StackProps {
   domainName?: string;
   hostedZoneId?: string;
   certificateArn?: string;
+  githubRepo?: string; // Format: 'owner/repo' (e.g., 'fredjean/fredjean-net-cdk')
 }
 
 export class StaticWebsiteStack extends cdk.Stack {
   public readonly bucket: s3.Bucket;
   public readonly distribution: cloudfront.Distribution;
   public readonly deploymentRole: iam.Role;
+  public readonly logBucket: s3.Bucket;
+  public readonly contactFormFunction: lambda.Function;
 
   constructor(scope: Construct, id: string, props?: StaticWebsiteStackProps) {
     super(scope, id, props);
+
+    // S3 bucket for access logs
+    this.logBucket = new s3.Bucket(this, 'LogBucket', {
+      encryption: s3.BucketEncryption.S3_MANAGED,
+      blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
+      enforceSSL: true,
+      removalPolicy: cdk.RemovalPolicy.RETAIN,
+      objectOwnership: s3.ObjectOwnership.OBJECT_WRITER,
+      lifecycleRules: [
+        {
+          expiration: cdk.Duration.days(90),
+        },
+      ],
+    });
 
     // S3 bucket for static website content
     this.bucket = new s3.Bucket(this, 'WebsiteBucket', {
@@ -33,6 +52,14 @@ export class StaticWebsiteStack extends cdk.Stack {
       autoDeleteObjects: false,
       encryption: s3.BucketEncryption.S3_MANAGED,
       enforceSSL: true,
+      versioned: true,
+      serverAccessLogsBucket: this.logBucket,
+      serverAccessLogsPrefix: 'website-access-logs/',
+      lifecycleRules: [
+        {
+          noncurrentVersionExpiration: cdk.Duration.days(30),
+        },
+      ],
     });
 
     // ACM Certificate (if provided)
@@ -45,13 +72,116 @@ export class StaticWebsiteStack extends cdk.Stack {
       );
     }
 
+    // Lambda function for contact form (must be created before CloudFront distribution)
+    this.contactFormFunction = new lambda.Function(this, 'ContactFormFunction', {
+      runtime: lambda.Runtime.NODEJS_22_X,
+      handler: 'index.handler',
+      code: lambda.Code.fromAsset(path.join(__dirname, '../lambda/contact-form'), {
+        exclude: ['*.test.mjs', 'node_modules', 'coverage'],
+      }),
+      timeout: cdk.Duration.seconds(10),
+      memorySize: 128,
+      description: 'Contact form handler that sends emails via SES',
+      environment: {
+        NODE_OPTIONS: '--enable-source-maps',
+        TO_ADDRESS: 'Fred Jean <fred@fredjean.net>',
+        FROM_ADDRESS: 'Contact Form <hello@fredjean.net>',
+        ALLOWED_ORIGIN: props?.domainName ? `https://${props.domainName}` : '*',
+      },
+    });
+
+    // Grant SES permissions to Lambda
+    this.contactFormFunction.addToRolePolicy(
+      new iam.PolicyStatement({
+        effect: iam.Effect.ALLOW,
+        actions: ['ses:SendEmail', 'ses:SendRawEmail'],
+        resources: ['*'],
+      })
+    );
+
+    // Create Function URL for Lambda
+    const functionUrl = this.contactFormFunction.addFunctionUrl({
+      authType: lambda.FunctionUrlAuthType.NONE,
+      cors: {
+        allowedOrigins: props?.domainName ? [`https://${props.domainName}`] : ['*'],
+        allowedMethods: [lambda.HttpMethod.POST],
+        allowedHeaders: ['Content-Type'],
+        maxAge: cdk.Duration.seconds(300),
+      },
+    });
+
+    // Extract domain from Function URL (remove https:// and trailing /)
+    const functionUrlDomain = cdk.Fn.select(2, cdk.Fn.split('/', functionUrl.url));
+
+    // CloudFront Function for directory index rewriting
+    const directoryIndexFunction = new cloudfront.Function(this, 'DirectoryIndexFunction', {
+      code: cloudfront.FunctionCode.fromFile({
+        filePath: path.join(__dirname, 'directory-index-rewrite.js'),
+      }),
+      runtime: cloudfront.FunctionRuntime.JS_2_0,
+      comment: 'Rewrites directory URLs to append index.html',
+    });
+
+    // CloudFront security headers policy
+    const securityHeadersPolicy = new cloudfront.ResponseHeadersPolicy(
+      this,
+      'SecurityHeadersPolicy',
+      {
+        securityHeadersBehavior: {
+          contentTypeOptions: { override: true },
+          frameOptions: {
+            frameOption: cloudfront.HeadersFrameOption.DENY,
+            override: true,
+          },
+          referrerPolicy: {
+            referrerPolicy: cloudfront.HeadersReferrerPolicy.STRICT_ORIGIN_WHEN_CROSS_ORIGIN,
+            override: true,
+          },
+          strictTransportSecurity: {
+            accessControlMaxAge: cdk.Duration.seconds(31536000),
+            includeSubdomains: true,
+            preload: true,
+            override: true,
+          },
+          xssProtection: {
+            protection: true,
+            modeBlock: true,
+            override: true,
+          },
+          contentSecurityPolicy: {
+            contentSecurityPolicy: "default-src 'self'; img-src 'self' data: https:; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline';",
+            override: true,
+          },
+        },
+      }
+    );
+
     // CloudFront distribution
     this.distribution = new cloudfront.Distribution(this, 'Distribution', {
       defaultBehavior: {
         origin: origins.S3BucketOrigin.withOriginAccessControl(this.bucket),
         viewerProtocolPolicy: cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
         cachePolicy: cloudfront.CachePolicy.CACHING_OPTIMIZED,
+        responseHeadersPolicy: securityHeadersPolicy,
         compress: true,
+        functionAssociations: [
+          {
+            function: directoryIndexFunction,
+            eventType: cloudfront.FunctionEventType.VIEWER_REQUEST,
+          },
+        ],
+      },
+      additionalBehaviors: {
+        '/rest/*': {
+          origin: new origins.HttpOrigin(functionUrlDomain, {
+            protocolPolicy: cloudfront.OriginProtocolPolicy.HTTPS_ONLY,
+          }),
+          viewerProtocolPolicy: cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
+          allowedMethods: cloudfront.AllowedMethods.ALLOW_ALL,
+          cachePolicy: cloudfront.CachePolicy.CACHING_DISABLED,
+          originRequestPolicy: cloudfront.OriginRequestPolicy.ALL_VIEWER_EXCEPT_HOST_HEADER,
+          compress: false,
+        },
       },
       defaultRootObject: 'index.html',
       errorResponses: [
@@ -71,6 +201,11 @@ export class StaticWebsiteStack extends cdk.Stack {
       priceClass: cloudfront.PriceClass.PRICE_CLASS_100,
       certificate: certificate,
       domainNames: certificate && props?.domainName ? [props.domainName] : undefined,
+      minimumProtocolVersion: cloudfront.SecurityPolicyProtocol.TLS_V1_2_2021,
+      enableLogging: true,
+      logBucket: this.logBucket,
+      logFilePrefix: 'cloudfront-logs/',
+      logIncludesCookies: false,
     });
 
     // Route53 record (if hosted zone is provided)
@@ -81,6 +216,14 @@ export class StaticWebsiteStack extends cdk.Stack {
       });
 
       new route53.ARecord(this, 'AliasRecord', {
+        zone: hostedZone,
+        recordName: props.domainName,
+        target: route53.RecordTarget.fromAlias(
+          new targets.CloudFrontTarget(this.distribution)
+        ),
+      });
+
+      new route53.AaaaRecord(this, 'AliasRecordIPv6', {
         zone: hostedZone,
         recordName: props.domainName,
         target: route53.RecordTarget.fromAlias(
@@ -98,7 +241,9 @@ export class StaticWebsiteStack extends cdk.Stack {
             'token.actions.githubusercontent.com:aud': 'sts.amazonaws.com',
           },
           StringLike: {
-            'token.actions.githubusercontent.com:sub': 'repo:*:*',
+            'token.actions.githubusercontent.com:sub': props?.githubRepo
+              ? `repo:${props.githubRepo}:*`
+              : 'repo:*:*', // Warning: Overly permissive! Set githubRepo property.
           },
         },
         'sts:AssumeRoleWithWebIdentity'
@@ -142,6 +287,11 @@ export class StaticWebsiteStack extends cdk.Stack {
     new cdk.CfnOutput(this, 'DeploymentRoleArn', {
       value: this.deploymentRole.roleArn,
       description: 'IAM role ARN for GitHub Actions deployment',
+    });
+
+    new cdk.CfnOutput(this, 'ContactFormUrl', {
+      value: functionUrl.url,
+      description: 'Contact form Lambda function URL',
     });
   }
 }

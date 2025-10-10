@@ -1,0 +1,68 @@
+[tools]
+node = "20"
+
+# Install dependencies
+[tasks.install]
+run = "npm install"
+description = "Install Node.js dependencies"
+
+# Build tasks
+[tasks.build]
+run = "npm run build"
+description = "Compile TypeScript to JavaScript"
+
+[tasks.watch]
+run = "npm run watch"
+description = "Watch and compile TypeScript on changes"
+
+[tasks.clean]
+run = "rm -rf cdk.out"
+description = "Clean build artifacts"
+
+# Test tasks
+[tasks.test]
+run = "npm test"
+description = "Run unit tests"
+
+[tasks."test:watch"]
+run = "npm test -- --watch"
+description = "Run tests in watch mode"
+
+# CDK tasks
+[tasks.synth]
+run = "npm run build && npx cdk synth"
+description = "Synthesize CloudFormation template"
+
+[tasks.diff]
+run = "npm run build && npx cdk diff"
+description = "Show differences between deployed stack and local changes"
+
+[tasks.deploy]
+run = "npm run build && npx cdk deploy"
+description = "Build and deploy the CDK stack to AWS"
+
+[tasks."deploy:hotswap"]
+run = "npm run build && npx cdk deploy --hotswap"
+description = "Deploy with hotswap for faster development iterations"
+
+[tasks.destroy]
+run = "npx cdk destroy"
+description = "Destroy the CDK stack (WARNING: deletes resources)"
+
+[tasks.bootstrap]
+run = "npx cdk bootstrap"
+description = "Bootstrap AWS account for CDK (first time setup)"
+
+[tasks.ls]
+run = "npx cdk ls"
+description = "List all stacks in the app"
+
+# Development workflow
+[tasks.dev]
+run = "npm run build && npm test && npx cdk synth"
+description = "Full development workflow: build, test, and synth"
+
+# Validation tasks
+[tasks.validate]
+run = "npm run build && npm test && npx cdk diff"
+description = "Validate changes: build, test, and show diff"
