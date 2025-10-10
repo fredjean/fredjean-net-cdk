@@ -2,6 +2,62 @@
 
 Modern, testable AWS Lambda function for handling contact form submissions via AWS SES.
 
+## Architecture
+
+```mermaid
+sequenceDiagram
+    participant User
+    participant CloudFront
+    participant Lambda
+    participant SES
+    participant Email
+    
+    User->>CloudFront: POST /rest/contact<br/>{name, email, phone, message}
+    CloudFront->>Lambda: Invoke via Function URL
+    
+    Lambda->>Lambda: Parse & validate input<br/>(email format, length limits, etc.)
+    
+    alt Validation Error
+        Lambda-->>CloudFront: 400 Bad Request<br/>{error: "...", field: "..."}
+        CloudFront-->>User: Validation error response
+    else Valid Input
+        Lambda->>Lambda: Sanitize & format email
+        Lambda->>SES: SendEmailCommand
+        
+        alt SES Success
+            SES->>Email: Deliver email
+            SES-->>Lambda: MessageId
+            Lambda-->>CloudFront: 200 OK<br/>{message: "Success", success: true}
+            CloudFront-->>User: Success response
+        else SES Error
+            SES-->>Lambda: Error
+            Lambda-->>CloudFront: 500 Internal Error<br/>{error: "Unable to send..."}
+            CloudFront-->>User: Error response
+        end
+    end
+```
+
+## Data Flow
+
+```mermaid
+flowchart LR
+    A[Raw Input] --> B[Validate Fields]
+    B -->|Invalid| C[400 Error Response]
+    B -->|Valid| D[Sanitize & Trim]
+    D --> E[Format Email Body]
+    E --> F[Generate Subject]
+    F --> G[Create SES Command]
+    G --> H{Send via SES}
+    H -->|Success| I[200 Success Response]
+    H -->|Failure| J[500 Error Response]
+    
+    style B fill:#bbf
+    style D fill:#bbf
+    style H fill:#fbb
+    style I fill:#bfb
+    style J fill:#fbb
+```
+
 ## Key Improvements Over Legacy Version
 
 ### 1. **Modern JavaScript (ES Modules)**
@@ -205,6 +261,57 @@ console.log(response);
 3. **reCAPTCHA** - Consider adding Google reCAPTCHA verification
 4. **Email Verification** - Consider verifying email addresses before sending
 5. **Spam Detection** - Consider integrating with spam detection services
+
+## Troubleshooting
+
+### "sesClient.send is not a function" Error
+
+This error occurred during initial deployment due to Lambda runtime quirks. **Fixed** by:
+
+1. Removing default parameter value from `sesClient`
+2. Adding type checking: `(sesClient && typeof sesClient === 'object')`
+3. Properly handling Lambda Function URL context (`awsRequestId` vs `requestId`)
+
+The function now correctly handles:
+- ✅ `sesClient` being `undefined` (Lambda doesn't pass 3rd parameter)
+- ✅ `sesClient` being a function (Lambda runtime quirk)
+- ✅ `sesClient` being `null` (test scenarios)
+- ✅ Valid SES client object (injected for testing)
+
+### Request ID Shows as "local"
+
+Lambda Function URLs use `context.awsRequestId` instead of `context.requestId`. The handler now checks both:
+
+```javascript
+const requestId = context?.awsRequestId || context?.requestId || 'local';
+```
+
+### ES Module Conflicts
+
+Ensure there's no stray `index.js` file in the Lambda directory. The function uses:
+- `index.mjs` (ES module format)
+- `package.json` with `"type": "module"`
+- Node.js 22.x runtime
+
+### Testing Locally
+
+All 34 tests pass and cover edge cases:
+
+```bash
+cd lambda/contact-form
+npm install
+npm test
+```
+
+Tests validate:
+- Field validation (email, name, phone, message)
+- Input sanitization and trimming
+- SES client creation under various conditions
+- Context handling (awsRequestId, requestId, null)
+- Lambda Function URL event format
+- Error handling (validation, SES failures)
+- CORS headers
+- Request ID logging
 
 ## Future Enhancements
 

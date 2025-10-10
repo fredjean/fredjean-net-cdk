@@ -1,65 +1,97 @@
 # fredjean-net-cdk
 
-CDK package to create the infrastructure needed to deploy a static website on S3, fronted by CloudFront
+CDK package to create the infrastructure for a production-ready static website on AWS with CloudFront CDN, Lambda-based contact forms, and CI/CD via GitHub Actions.
 
 ## Architecture
 
-```
-┌─────────────────┐
-│   GitHub        │
-│   Actions       │
-│   (CI/CD)       │
-└────────┬────────┘
-         │ OIDC Auth
-         ▼
-┌─────────────────────────────────────────────────────────────┐
-│                        AWS Account                          │
-│                                                             │
-│  ┌──────────────┐                                          │
-│  │     IAM      │                                          │
-│  │  Deployment  │                                          │
-│  │     Role     │                                          │
-│  └──────┬───────┘                                          │
-│         │                                                   │
-│         │ Upload Files    ┌─────────────────┐             │
-│         └────────────────►│       S3        │             │
-│                           │  Static Website │             │
-│         ┌─────────────────┤     Bucket      │             │
-│         │                 └────────┬────────┘             │
-│         │                          │                       │
-│         │ Create Invalidation      │ Origin               │
-│         │                          │                       │
-│         ▼                          ▼                       │
-│  ┌──────────────┐          ┌──────────────┐               │
-│  │  CloudFront  │◄─────────│    Origin    │               │
-│  │ Distribution │          │    Access    │               │
-│  │              │          │   Control    │               │
-│  └──────┬───────┘          └──────────────┘               │
-│         │                                                   │
-│         │ (Optional)                                        │
-│         ▼                                                   │
-│  ┌──────────────┐          ┌──────────────┐               │
-│  │     ACM      │          │   Route 53   │               │
-│  │ Certificate  │          │  DNS Records │               │
-│  └──────────────┘          └──────────────┘               │
-│                                                             │
-└─────────────────────────────────────────────────────────────┘
-         │
-         │ HTTPS
-         ▼
-┌─────────────────┐
-│   End Users     │
-└─────────────────┘
+```mermaid
+flowchart TB
+    subgraph "CI/CD"
+        GH[GitHub Actions]
+    end
+    
+    subgraph "AWS Account"
+        subgraph "IAM"
+            DeployRole[Deployment Role<br/>OIDC]
+            AdminRole[Assumable Admin Role<br/>PowerUserAccess → Admin]
+        end
+        
+        subgraph "Storage & Logging"
+            S3Site[S3 Static Website<br/>Versioned + Encrypted]
+            S3Logs[S3 Log Bucket<br/>Access Logs]
+        end
+        
+        subgraph "CDN & Edge"
+            CF[CloudFront Distribution<br/>Security Headers + Logging]
+            CFFunc[CloudFront Function<br/>Directory Index Rewrite]
+        end
+        
+        subgraph "Backend"
+            Lambda[Contact Form Lambda<br/>Node 22.x + ES Modules]
+            LambdaURL[Lambda Function URL<br/>/rest/*]
+            SES[Amazon SES<br/>Email Service]
+        end
+        
+        subgraph "DNS & TLS Optional"
+            R53[Route 53<br/>A + AAAA Records]
+            ACM[ACM Certificate<br/>TLS/SSL]
+        end
+        
+        OAC[Origin Access Control]
+    end
+    
+    Users[End Users] -->|HTTPS| CF
+    GH -->|OIDC Auth| DeployRole
+    DeployRole -->|Upload Files| S3Site
+    DeployRole -->|Invalidate Cache| CF
+    
+    CF -->|GET /| CFFunc
+    CFFunc -->|Rewrite URLs| OAC
+    OAC -->|Read| S3Site
+    
+    CF -->|POST /rest/*| LambdaURL
+    LambdaURL -->|Invoke| Lambda
+    Lambda -->|Send Email| SES
+    
+    CF -.->|Logs| S3Logs
+    S3Site -.->|Access Logs| S3Logs
+    
+    CF -.->|Optional| ACM
+    CF -.->|Optional| R53
 ```
 
-## Overview
+## Features
 
-This AWS CDK package creates all the infrastructure needed to host a static website using:
-- **S3** for storing website files
-- **CloudFront** for global content delivery
-- **ACM** for SSL/TLS certificates (optional)
-- **Route53** for DNS management (optional)
-- **IAM** roles for GitHub Actions deployment
+### Core Infrastructure
+- ✅ **S3** for static website hosting with versioning and encryption
+- ✅ **CloudFront** CDN with security headers (CSP, HSTS, X-Frame-Options)
+- ✅ **Lambda Function URL** for serverless contact form (Node.js 22.x)
+- ✅ **CloudFront Functions** for directory index rewriting (clean URLs)
+- ✅ **Origin Access Control** (OAC) for secure S3 access
+- ✅ **ACM SSL/TLS certificates** (optional)
+- ✅ **Route53 DNS** with IPv4 (A) and IPv6 (AAAA) records (optional)
+
+### Security
+- 🔒 S3 bucket with public access blocked
+- 🔒 HTTPS enforced via CloudFront
+- 🔒 Security headers: CSP, HSTS, X-Frame-Options, XSS Protection
+- 🔒 IAM roles with least privilege (OIDC for GitHub Actions)
+- 🔒 Assumable admin role for privilege escalation (PowerUserAccess → Admin)
+- 🔒 Lambda input validation and sanitization
+- 🔒 CORS configuration for Lambda Function URLs
+
+### Observability
+- 📊 CloudFront access logs to S3
+- 📊 S3 server access logs
+- 📊 Lambda structured JSON logging with request IDs
+- 📊 S3 versioning with 30-day retention for old versions
+
+### Developer Experience
+- 🚀 GitHub Actions OIDC integration (no long-lived credentials)
+- 🚀 CDK Infrastructure as Code
+- 🚀 TypeScript with comprehensive tests
+- 🚀 Mise task automation (`mise run deploy`, `mise run test`)
+- 🚀 Hotswap deployments for rapid Lambda iteration
 
 ## Quick Start
 
@@ -210,6 +242,99 @@ aws cloudfront create-invalidation \
   --paths "/*"
 ```
 
+## Contact Form Lambda
+
+The stack includes a production-ready contact form Lambda function:
+
+### Features
+- **Modern ES Modules** (`.mjs`) with Node.js 22.x runtime
+- **Comprehensive validation** with field-specific error messages
+- **Input sanitization** against injection attacks
+- **SES email integration** with configurable addresses
+- **Structured JSON logging** with request IDs for CloudWatch
+- **CORS support** for cross-origin requests
+- **Lambda Function URL** (no API Gateway needed)
+- **34 unit tests** covering all edge cases
+
+### API Endpoint
+
+The contact form is accessible at `https://your-domain.com/rest/*` via CloudFront.
+
+**Request:**
+```bash
+curl -X POST https://your-domain.com/rest/contact \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "John Doe",
+    "email": "john@example.com",
+    "phone": "555-1234",
+    "message": "Your message here"
+  }'
+```
+
+**Response (Success):**
+```json
+{
+  "message": "Thank you for contacting us! Your message has been sent.",
+  "success": true
+}
+```
+
+**Response (Validation Error):**
+```json
+{
+  "error": "email contains invalid characters",
+  "field": "email"
+}
+```
+
+### Testing
+
+```bash
+cd lambda/contact-form
+npm install
+npm test              # Run all tests
+npm run test:watch    # Watch mode
+npm run test:coverage # Coverage report
+```
+
+See [`lambda/contact-form/README.md`](lambda/contact-form/README.md) for detailed documentation.
+
+## Mise Task Automation
+
+This project uses [mise](https://mise.jdx.dev/) for task automation. Common tasks:
+
+```bash
+# Install dependencies
+mise run install
+
+# Build TypeScript
+mise run build
+
+# Run tests
+mise run test
+
+# Deploy to AWS
+mise run deploy
+
+# Deploy with hotswap (fast Lambda updates)
+mise run deploy:hotswap
+
+# Show diff before deploying
+mise run diff
+
+# Synthesize CloudFormation
+mise run synth
+
+# Full dev workflow (build + test + synth)
+mise run dev
+
+# Validate changes
+mise run validate
+```
+
+See [`mise.toml`](mise.toml) for all available tasks.
+
 ## Stack Outputs
 
 After deployment, the stack provides these outputs:
@@ -217,6 +342,7 @@ After deployment, the stack provides these outputs:
 - **BucketName**: S3 bucket name for website content
 - **DistributionId**: CloudFront distribution ID
 - **DistributionDomainName**: CloudFront URL for your website
+- **ContactFormUrl**: Lambda Function URL for contact form
 - **DeploymentRoleArn**: IAM role ARN for GitHub Actions
 
 ## Project Structure
@@ -224,17 +350,26 @@ After deployment, the stack provides these outputs:
 ```
 .
 ├── bin/
-│   └── fredjean-net-cdk.ts    # CDK app entry point
+│   └── fredjean-net-cdk.ts           # CDK app entry point
 ├── lib/
-│   └── static-website-stack.ts # Main stack definition
+│   ├── static-website-stack.ts       # Main website stack
+│   ├── admin-role-stack.ts           # Assumable admin role
+│   └── directory-index-rewrite.js    # CloudFront Function for clean URLs
+├── lambda/
+│   └── contact-form/
+│       ├── index.mjs                 # Lambda handler (ES modules)
+│       ├── index.test.mjs            # Comprehensive unit tests
+│       ├── package.json              # Lambda dependencies
+│       └── README.md                 # Lambda documentation
 ├── test/
-│   └── static-website-stack.test.ts # Unit tests
+│   └── static-website-stack.test.ts  # CDK stack tests
 ├── .github/
 │   └── workflows/
-│       └── deploy.yml          # GitHub Actions workflow
-├── cdk.json                    # CDK configuration
-├── tsconfig.json               # TypeScript configuration
-└── package.json                # Node.js dependencies
+│       └── deploy.yml                # GitHub Actions workflow
+├── mise.toml                         # Task automation config
+├── cdk.json                          # CDK configuration
+├── tsconfig.json                     # TypeScript configuration
+└── package.json                      # Node.js dependencies
 ```
 
 ## Customization
