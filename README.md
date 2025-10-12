@@ -300,6 +300,73 @@ npm run test:coverage # Coverage report
 
 See [`lambda/contact-form/README.md`](lambda/contact-form/README.md) for detailed documentation.
 
+## CloudFront Log Analysis with Amazon Athena
+
+The stack includes a complete setup for analyzing CloudFront access logs using Amazon Athena and AWS Glue. This provides powerful SQL-based analytics for understanding your website traffic patterns.
+
+### What's Included
+
+- **AWS Glue Database**: `cloudfront_logs` database with CloudFront log schema (33 columns)
+- **AWS Glue Table**: `access_logs` table mapped to your CloudFront logs in S3
+- **Athena Workgroup**: Configured `primary` workgroup with query results stored in dedicated S3 bucket
+- **8 Pre-built Queries**: Ready-to-use SQL queries for common analytics tasks
+
+### Quick Start
+
+1. **Open Athena Console**: [https://console.aws.amazon.com/athena/](https://console.aws.amazon.com/athena/)
+2. **Select Database**: Choose `cloudfront_logs` from the database dropdown
+3. **Run a Query**: Copy one of the queries from `athena-queries/` directory
+4. **View Results**: Results appear in the console and are saved to S3
+
+### Available Queries
+
+| Query | Purpose | Example Use Case |
+|-------|---------|------------------|
+| `top-pages.sql` | Most accessed pages | Understand popular content |
+| `status-codes.sql` | HTTP status distribution | Monitor site health |
+| `top-referrers.sql` | Traffic sources | Track marketing effectiveness |
+| `bandwidth-by-day.sql` | Daily bandwidth trends | Capacity planning |
+| `error-pages.sql` | 404s and errors | Fix broken links |
+| `response-times.sql` | Performance analysis | Optimize slow pages |
+| `client-ips.sql` | Top visitor IPs | Bot detection |
+| `user-agents.sql` | Browser/bot analysis | Browser compatibility |
+
+### Example Query
+
+```sql
+-- Find your top 20 most popular pages
+SELECT 
+    cs_uri_stem AS page_path,
+    COUNT(*) AS request_count,
+    COUNT(DISTINCT c_ip) AS unique_visitors
+FROM cloudfront_logs.access_logs
+WHERE date >= DATE '2025-10-01'
+  AND sc_status >= 200
+  AND sc_status < 400
+GROUP BY cs_uri_stem
+ORDER BY request_count DESC
+LIMIT 20;
+```
+
+### Cost Optimization
+
+Athena charges $5/TB of data scanned. For most personal/small sites:
+- **Personal blog**: ~$0.01-0.05/month
+- **Small business site**: ~$0.10-0.25/month
+
+**Best practices**:
+- Always filter by `date` to limit scanned data
+- Use `LIMIT` to restrict result sets
+- Results are cached for 24 hours (re-running is free)
+
+### Documentation
+
+For complete documentation, query examples, and troubleshooting:
+- See **[`athena-queries/README.md`](athena-queries/README.md)** for detailed guide
+- AWS CLI examples and automation scripts
+- Integration with QuickSight dashboards
+- Advanced analysis techniques
+
 ## Mise Task Automation
 
 This project uses [mise](https://mise.jdx.dev/) for task automation. Common tasks:
@@ -361,6 +428,16 @@ After deployment, the stack provides these outputs:
 │       ├── index.test.mjs            # Comprehensive unit tests
 │       ├── package.json              # Lambda dependencies
 │       └── README.md                 # Lambda documentation
+├── athena-queries/
+│   ├── README.md                     # Athena setup and usage guide
+│   ├── top-pages.sql                 # Most accessed pages query
+│   ├── status-codes.sql              # HTTP status distribution
+│   ├── top-referrers.sql             # Traffic sources analysis
+│   ├── bandwidth-by-day.sql          # Daily traffic trends
+│   ├── error-pages.sql               # 404 and error detection
+│   ├── response-times.sql            # Performance analysis
+│   ├── client-ips.sql                # Top visitor IPs
+│   └── user-agents.sql               # Browser and bot analysis
 ├── test/
 │   └── static-website-stack.test.ts  # CDK stack tests
 ├── .github/

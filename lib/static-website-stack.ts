@@ -8,6 +8,8 @@ import * as route53 from 'aws-cdk-lib/aws-route53';
 import * as targets from 'aws-cdk-lib/aws-route53-targets';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
+import * as glue from 'aws-cdk-lib/aws-glue';
+import * as athena from 'aws-cdk-lib/aws-athena';
 import * as path from 'path';
 
 export interface StaticWebsiteStackProps extends cdk.StackProps {
@@ -23,6 +25,9 @@ export class StaticWebsiteStack extends cdk.Stack {
   public readonly deploymentRole: iam.Role;
   public readonly logBucket: s3.Bucket;
   public readonly contactFormFunction: lambda.Function;
+  public readonly athenaResultsBucket: s3.Bucket;
+  public readonly glueDatabase: glue.CfnDatabase;
+  public readonly glueTable: glue.CfnTable;
 
   constructor(scope: Construct, id: string, props?: StaticWebsiteStackProps) {
     super(scope, id, props);
@@ -37,6 +42,20 @@ export class StaticWebsiteStack extends cdk.Stack {
       lifecycleRules: [
         {
           expiration: cdk.Duration.days(90),
+        },
+      ],
+    });
+
+    // S3 bucket for Athena query results
+    this.athenaResultsBucket = new s3.Bucket(this, 'AthenaResultsBucket', {
+      bucketName: props?.domainName ? `${props.domainName}-athena-results` : undefined,
+      encryption: s3.BucketEncryption.S3_MANAGED,
+      blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
+      enforceSSL: true,
+      removalPolicy: cdk.RemovalPolicy.RETAIN,
+      lifecycleRules: [
+        {
+          expiration: cdk.Duration.days(30),
         },
       ],
     });
@@ -275,6 +294,99 @@ export class StaticWebsiteStack extends cdk.Stack {
       })
     );
 
+    // AWS Glue database for CloudFront logs
+    this.glueDatabase = new glue.CfnDatabase(this, 'CloudFrontLogsDatabase', {
+      catalogId: this.account,
+      databaseInput: {
+        name: 'cloudfront_logs',
+        description: 'Database for CloudFront access logs analysis',
+      },
+    });
+
+    // AWS Glue table for CloudFront access logs
+    // Schema based on CloudFront standard log format
+    // https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/AccessLogs.html
+    this.glueTable = new glue.CfnTable(this, 'CloudFrontLogsTable', {
+      catalogId: this.account,
+      databaseName: this.glueDatabase.ref,
+      tableInput: {
+        name: 'access_logs',
+        description: 'CloudFront access logs in standard format',
+        tableType: 'EXTERNAL_TABLE',
+        parameters: {
+          'skip.header.line.count': '2', // CloudFront logs have 2 header lines
+          'projection.enabled': 'false',
+        },
+        storageDescriptor: {
+          columns: [
+            { name: 'date', type: 'date', comment: 'Date of the request' },
+            { name: 'time', type: 'string', comment: 'Time of the request (UTC)' },
+            { name: 'x_edge_location', type: 'string', comment: 'Edge location that served the request' },
+            { name: 'sc_bytes', type: 'bigint', comment: 'Total bytes sent to the client' },
+            { name: 'c_ip', type: 'string', comment: 'IP address of the client' },
+            { name: 'cs_method', type: 'string', comment: 'HTTP method' },
+            { name: 'cs_host', type: 'string', comment: 'Domain name' },
+            { name: 'cs_uri_stem', type: 'string', comment: 'URI stem (path)' },
+            { name: 'sc_status', type: 'int', comment: 'HTTP status code' },
+            { name: 'cs_referer', type: 'string', comment: 'Referer header' },
+            { name: 'cs_user_agent', type: 'string', comment: 'User-Agent header' },
+            { name: 'cs_uri_query', type: 'string', comment: 'Query string' },
+            { name: 'cs_cookie', type: 'string', comment: 'Cookie header' },
+            { name: 'x_edge_result_type', type: 'string', comment: 'Result type (Hit, Miss, Error, etc.)' },
+            { name: 'x_edge_request_id', type: 'string', comment: 'Encrypted request ID' },
+            { name: 'x_host_header', type: 'string', comment: 'Host header sent by viewer' },
+            { name: 'cs_protocol', type: 'string', comment: 'Protocol (http, https, ws, wss)' },
+            { name: 'cs_bytes', type: 'bigint', comment: 'Bytes sent by the client' },
+            { name: 'time_taken', type: 'double', comment: 'Time taken in seconds' },
+            { name: 'x_forwarded_for', type: 'string', comment: 'X-Forwarded-For header' },
+            { name: 'ssl_protocol', type: 'string', comment: 'SSL/TLS protocol' },
+            { name: 'ssl_cipher', type: 'string', comment: 'SSL/TLS cipher' },
+            { name: 'x_edge_response_result_type', type: 'string', comment: 'Response result type' },
+            { name: 'cs_protocol_version', type: 'string', comment: 'HTTP protocol version' },
+            { name: 'fle_status', type: 'string', comment: 'Field-level encryption status' },
+            { name: 'fle_encrypted_fields', type: 'int', comment: 'Number of encrypted fields' },
+            { name: 'c_port', type: 'int', comment: 'Client port number' },
+            { name: 'time_to_first_byte', type: 'double', comment: 'Time to first byte in seconds' },
+            { name: 'x_edge_detailed_result_type', type: 'string', comment: 'Detailed result type' },
+            { name: 'sc_content_type', type: 'string', comment: 'Content-Type header' },
+            { name: 'sc_content_len', type: 'bigint', comment: 'Content-Length header' },
+            { name: 'sc_range_start', type: 'bigint', comment: 'Range request start byte' },
+            { name: 'sc_range_end', type: 'bigint', comment: 'Range request end byte' },
+          ],
+          location: `s3://${this.logBucket.bucketName}/cloudfront-logs/`,
+          inputFormat: 'org.apache.hadoop.mapred.TextInputFormat',
+          outputFormat: 'org.apache.hadoop.hive.ql.io.HiveIgnoreKeyTextOutputFormat',
+          compressed: true,
+          serdeInfo: {
+            serializationLibrary: 'org.apache.hadoop.hive.serde2.lazy.LazySimpleSerDe',
+            parameters: {
+              'field.delim': '\t',
+              'serialization.format': '\t',
+            },
+          },
+        },
+      },
+    });
+
+    // Configure Athena workgroup for CloudFront log analysis
+    const athenaWorkgroup = new athena.CfnWorkGroup(this, 'AthenaWorkGroup', {
+      name: 'cloudfront-logs',
+      description: 'Workgroup for analyzing CloudFront access logs',
+      workGroupConfiguration: {
+        resultConfiguration: {
+          outputLocation: `s3://${this.athenaResultsBucket.bucketName}/`,
+          encryptionConfiguration: {
+            encryptionOption: 'SSE_S3',
+          },
+        },
+        engineVersion: {
+          selectedEngineVersion: 'AUTO',
+        },
+        publishCloudWatchMetricsEnabled: true,
+      },
+      recursiveDeleteOption: true,
+    });
+
     // Outputs
     new cdk.CfnOutput(this, 'BucketName', {
       value: this.bucket.bucketName,
@@ -299,6 +411,26 @@ export class StaticWebsiteStack extends cdk.Stack {
     new cdk.CfnOutput(this, 'ContactFormUrl', {
       value: functionUrl.url,
       description: 'Contact form Lambda function URL',
+    });
+
+    new cdk.CfnOutput(this, 'AthenaQueryResultsBucket', {
+      value: this.athenaResultsBucket.bucketName,
+      description: 'S3 bucket for Athena query results',
+    });
+
+    new cdk.CfnOutput(this, 'GlueDatabaseName', {
+      value: this.glueDatabase.ref,
+      description: 'Glue database name for CloudFront logs',
+    });
+
+    new cdk.CfnOutput(this, 'GlueTableName', {
+      value: 'access_logs',
+      description: 'Glue table name for CloudFront access logs',
+    });
+
+    new cdk.CfnOutput(this, 'AthenaWorkgroup', {
+      value: athenaWorkgroup.name,
+      description: 'Athena workgroup name',
     });
   }
 }

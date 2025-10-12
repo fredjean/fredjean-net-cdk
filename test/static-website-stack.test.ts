@@ -30,7 +30,7 @@ describe('StaticWebsiteStack', () => {
     const stack = new StaticWebsiteStack(app, 'TestStack');
     const template = Template.fromStack(stack);
 
-    template.resourceCountIs('AWS::S3::Bucket', 2); // Website bucket + log bucket
+    template.resourceCountIs('AWS::S3::Bucket', 3); // Website bucket + log bucket + Athena results bucket
   });
 
   test('S3 bucket has access logging enabled', () => {
@@ -736,6 +736,389 @@ describe('StaticWebsiteStack', () => {
       const functionAssociation = defaultBehavior.FunctionAssociations[0];
       expect(functionAssociation.FunctionARN).toHaveProperty('Fn::GetAtt');
       expect(functionAssociation.FunctionARN['Fn::GetAtt'][1]).toBe('FunctionARN');
+    });
+  });
+
+  describe('Athena Infrastructure', () => {
+    describe('S3 Bucket for Athena Query Results', () => {
+      test('creates Athena results bucket', () => {
+        const app = new cdk.App();
+        const stack = new StaticWebsiteStack(app, 'TestStack');
+        const template = Template.fromStack(stack);
+
+        // Should have 3 buckets: website, logs, and athena results
+        template.resourceCountIs('AWS::S3::Bucket', 3);
+      });
+
+      test('Athena results bucket has encryption enabled', () => {
+        const app = new cdk.App();
+        const stack = new StaticWebsiteStack(app, 'TestStack');
+        const template = Template.fromStack(stack);
+
+        const buckets = template.findResources('AWS::S3::Bucket');
+        const athenaResultsBucket = Object.values(buckets).find(
+          (bucket: any) => {
+            return bucket.Properties.LifecycleConfiguration?.Rules?.some(
+              (rule: any) => rule.ExpirationInDays === 30
+            );
+          }
+        );
+
+        expect(athenaResultsBucket).toBeDefined();
+        expect(athenaResultsBucket).toHaveProperty('Properties');
+      });
+
+      test('Athena results bucket blocks public access', () => {
+        const app = new cdk.App();
+        const stack = new StaticWebsiteStack(app, 'TestStack');
+        const template = Template.fromStack(stack);
+
+        const buckets = template.findResources('AWS::S3::Bucket');
+        Object.values(buckets).forEach((bucket: any) => {
+          expect(bucket.Properties.PublicAccessBlockConfiguration).toEqual({
+            BlockPublicAcls: true,
+            BlockPublicPolicy: true,
+            IgnorePublicAcls: true,
+            RestrictPublicBuckets: true,
+          });
+        });
+      });
+
+      test('Athena results bucket has 30-day lifecycle policy', () => {
+        const app = new cdk.App();
+        const stack = new StaticWebsiteStack(app, 'TestStack');
+        const template = Template.fromStack(stack);
+
+        const buckets = template.findResources('AWS::S3::Bucket');
+        const athenaResultsBucket = Object.values(buckets).find(
+          (bucket: any) => {
+            return bucket.Properties.LifecycleConfiguration?.Rules?.some(
+              (rule: any) => rule.ExpirationInDays === 30
+            );
+          }
+        );
+
+        expect(athenaResultsBucket).toBeDefined();
+        const lifecycleRule = athenaResultsBucket!.Properties.LifecycleConfiguration.Rules[0];
+        expect(lifecycleRule.ExpirationInDays).toBe(30);
+      });
+
+      test('Athena results bucket enforces SSL', () => {
+        const app = new cdk.App();
+        const stack = new StaticWebsiteStack(app, 'TestStack');
+        const template = Template.fromStack(stack);
+
+        // Verify bucket policy denies non-SSL access
+        template.hasResourceProperties('AWS::S3::BucketPolicy', {
+          PolicyDocument: {
+            Statement: [
+              {
+                Effect: 'Deny',
+                Action: 's3:*',
+                Condition: {
+                  Bool: {
+                    'aws:SecureTransport': 'false',
+                  },
+                },
+              },
+            ],
+          },
+        });
+      });
+    });
+
+    describe('AWS Glue Database', () => {
+      test('creates Glue database for CloudFront logs', () => {
+        const app = new cdk.App();
+        const stack = new StaticWebsiteStack(app, 'TestStack');
+        const template = Template.fromStack(stack);
+
+        template.resourceCountIs('AWS::Glue::Database', 1);
+      });
+
+      test('Glue database has correct name', () => {
+        const app = new cdk.App();
+        const stack = new StaticWebsiteStack(app, 'TestStack');
+        const template = Template.fromStack(stack);
+
+        template.hasResourceProperties('AWS::Glue::Database', {
+          DatabaseInput: {
+            Name: 'cloudfront_logs',
+            Description: 'Database for CloudFront access logs analysis',
+          },
+        });
+      });
+    });
+
+    describe('AWS Glue Table', () => {
+      test('creates Glue table for CloudFront access logs', () => {
+        const app = new cdk.App();
+        const stack = new StaticWebsiteStack(app, 'TestStack');
+        const template = Template.fromStack(stack);
+
+        template.resourceCountIs('AWS::Glue::Table', 1);
+      });
+
+      test('Glue table has correct name and type', () => {
+        const app = new cdk.App();
+        const stack = new StaticWebsiteStack(app, 'TestStack');
+        const template = Template.fromStack(stack);
+
+        template.hasResourceProperties('AWS::Glue::Table', {
+          TableInput: {
+            Name: 'access_logs',
+            Description: 'CloudFront access logs in standard format',
+            TableType: 'EXTERNAL_TABLE',
+          },
+        });
+      });
+
+      test('Glue table has CloudFront log schema with 33 columns', () => {
+        const app = new cdk.App();
+        const stack = new StaticWebsiteStack(app, 'TestStack');
+        const template = Template.fromStack(stack);
+
+        const tables = template.findResources('AWS::Glue::Table');
+        const tableKey = Object.keys(tables)[0];
+        const table = tables[tableKey];
+
+        const columns = table.Properties.TableInput.StorageDescriptor.Columns;
+        expect(columns).toHaveLength(33);
+      });
+
+      test('Glue table has key CloudFront log columns', () => {
+        const app = new cdk.App();
+        const stack = new StaticWebsiteStack(app, 'TestStack');
+        const template = Template.fromStack(stack);
+
+        const tables = template.findResources('AWS::Glue::Table');
+        const tableKey = Object.keys(tables)[0];
+        const table = tables[tableKey];
+
+        const columns = table.Properties.TableInput.StorageDescriptor.Columns;
+        const columnNames = columns.map((col: any) => col.Name);
+
+        // Verify key columns exist
+        expect(columnNames).toContain('date');
+        expect(columnNames).toContain('time');
+        expect(columnNames).toContain('c_ip');
+        expect(columnNames).toContain('cs_method');
+        expect(columnNames).toContain('cs_uri_stem');
+        expect(columnNames).toContain('sc_status');
+        expect(columnNames).toContain('sc_bytes');
+        expect(columnNames).toContain('cs_user_agent');
+        expect(columnNames).toContain('cs_referer');
+      });
+
+      test('Glue table has correct data types for key columns', () => {
+        const app = new cdk.App();
+        const stack = new StaticWebsiteStack(app, 'TestStack');
+        const template = Template.fromStack(stack);
+
+        const tables = template.findResources('AWS::Glue::Table');
+        const tableKey = Object.keys(tables)[0];
+        const table = tables[tableKey];
+
+        const columns = table.Properties.TableInput.StorageDescriptor.Columns;
+        
+        const dateColumn = columns.find((col: any) => col.Name === 'date');
+        expect(dateColumn.Type).toBe('date');
+
+        const statusColumn = columns.find((col: any) => col.Name === 'sc_status');
+        expect(statusColumn.Type).toBe('int');
+
+        const bytesColumn = columns.find((col: any) => col.Name === 'sc_bytes');
+        expect(bytesColumn.Type).toBe('bigint');
+
+        const timeTakenColumn = columns.find((col: any) => col.Name === 'time_taken');
+        expect(timeTakenColumn.Type).toBe('double');
+      });
+
+      test('Glue table configured to skip CloudFront log headers', () => {
+        const app = new cdk.App();
+        const stack = new StaticWebsiteStack(app, 'TestStack');
+        const template = Template.fromStack(stack);
+
+        template.hasResourceProperties('AWS::Glue::Table', {
+          TableInput: {
+            Parameters: {
+              'skip.header.line.count': '2',
+            },
+          },
+        });
+      });
+
+      test('Glue table uses LazySimpleSerDe for tab-delimited format', () => {
+        const app = new cdk.App();
+        const stack = new StaticWebsiteStack(app, 'TestStack');
+        const template = Template.fromStack(stack);
+
+        template.hasResourceProperties('AWS::Glue::Table', {
+          TableInput: {
+            StorageDescriptor: {
+              SerdeInfo: {
+                SerializationLibrary: 'org.apache.hadoop.hive.serde2.lazy.LazySimpleSerDe',
+                Parameters: {
+                  'field.delim': '\t',
+                  'serialization.format': '\t',
+                },
+              },
+            },
+          },
+        });
+      });
+
+      test('Glue table configured for gzip compression', () => {
+        const app = new cdk.App();
+        const stack = new StaticWebsiteStack(app, 'TestStack');
+        const template = Template.fromStack(stack);
+
+        template.hasResourceProperties('AWS::Glue::Table', {
+          TableInput: {
+            StorageDescriptor: {
+              Compressed: true,
+            },
+          },
+        });
+      });
+
+      test('Glue table points to CloudFront logs S3 location', () => {
+        const app = new cdk.App();
+        const stack = new StaticWebsiteStack(app, 'TestStack');
+        const template = Template.fromStack(stack);
+
+        const tables = template.findResources('AWS::Glue::Table');
+        const tableKey = Object.keys(tables)[0];
+        const table = tables[tableKey];
+
+        const location = table.Properties.TableInput.StorageDescriptor.Location;
+        // Location is a CloudFormation Join function, check it has the right structure
+        expect(location).toHaveProperty('Fn::Join');
+        const joinParts = location['Fn::Join'][1];
+        expect(joinParts).toContain('/cloudfront-logs/');
+      });
+    });
+
+    describe('Athena WorkGroup', () => {
+      test('creates Athena workgroup', () => {
+        const app = new cdk.App();
+        const stack = new StaticWebsiteStack(app, 'TestStack');
+        const template = Template.fromStack(stack);
+
+        template.resourceCountIs('AWS::Athena::WorkGroup', 1);
+      });
+
+      test('Athena workgroup has correct name', () => {
+        const app = new cdk.App();
+        const stack = new StaticWebsiteStack(app, 'TestStack');
+        const template = Template.fromStack(stack);
+
+        template.hasResourceProperties('AWS::Athena::WorkGroup', {
+          Name: 'cloudfront-logs',
+          Description: 'Workgroup for analyzing CloudFront access logs',
+        });
+      });
+
+      test('Athena workgroup configured with result encryption', () => {
+        const app = new cdk.App();
+        const stack = new StaticWebsiteStack(app, 'TestStack');
+        const template = Template.fromStack(stack);
+
+        template.hasResourceProperties('AWS::Athena::WorkGroup', {
+          WorkGroupConfiguration: {
+            ResultConfiguration: {
+              EncryptionConfiguration: {
+                EncryptionOption: 'SSE_S3',
+              },
+            },
+          },
+        });
+      });
+
+      test('Athena workgroup uses Athena Engine Version 3', () => {
+        const app = new cdk.App();
+        const stack = new StaticWebsiteStack(app, 'TestStack');
+        const template = Template.fromStack(stack);
+
+        template.hasResourceProperties('AWS::Athena::WorkGroup', {
+          WorkGroupConfiguration: {
+            EngineVersion: {
+              SelectedEngineVersion: 'AUTO',
+            },
+          },
+        });
+      });
+
+      test('Athena workgroup has CloudWatch metrics enabled', () => {
+        const app = new cdk.App();
+        const stack = new StaticWebsiteStack(app, 'TestStack');
+        const template = Template.fromStack(stack);
+
+        template.hasResourceProperties('AWS::Athena::WorkGroup', {
+          WorkGroupConfiguration: {
+            PublishCloudWatchMetricsEnabled: true,
+          },
+        });
+      });
+
+      test('Athena workgroup points to results bucket', () => {
+        const app = new cdk.App();
+        const stack = new StaticWebsiteStack(app, 'TestStack');
+        const template = Template.fromStack(stack);
+
+        const workgroups = template.findResources('AWS::Athena::WorkGroup');
+        const workgroupKey = Object.keys(workgroups)[0];
+        const workgroup = workgroups[workgroupKey];
+
+        const outputLocation = workgroup.Properties.WorkGroupConfiguration.ResultConfiguration.OutputLocation;
+        // Output location is a CloudFormation Join function
+        expect(outputLocation).toHaveProperty('Fn::Join');
+        const joinParts = outputLocation['Fn::Join'][1];
+        expect(joinParts[0]).toBe('s3://');
+      });
+    });
+
+    describe('Stack Outputs', () => {
+      test('exports Athena query results bucket name', () => {
+        const app = new cdk.App();
+        const stack = new StaticWebsiteStack(app, 'TestStack');
+        const template = Template.fromStack(stack);
+
+        template.hasOutput('AthenaQueryResultsBucket', {
+          Description: 'S3 bucket for Athena query results',
+        });
+      });
+
+      test('exports Glue database name', () => {
+        const app = new cdk.App();
+        const stack = new StaticWebsiteStack(app, 'TestStack');
+        const template = Template.fromStack(stack);
+
+        template.hasOutput('GlueDatabaseName', {
+          Description: 'Glue database name for CloudFront logs',
+        });
+      });
+
+      test('exports Glue table name', () => {
+        const app = new cdk.App();
+        const stack = new StaticWebsiteStack(app, 'TestStack');
+        const template = Template.fromStack(stack);
+
+        template.hasOutput('GlueTableName', {
+          Value: 'access_logs',
+          Description: 'Glue table name for CloudFront access logs',
+        });
+      });
+
+      test('exports Athena workgroup name', () => {
+        const app = new cdk.App();
+        const stack = new StaticWebsiteStack(app, 'TestStack');
+        const template = Template.fromStack(stack);
+
+        template.hasOutput('AthenaWorkgroup', {
+          Description: 'Athena workgroup name',
+        });
+      });
     });
   });
 });
