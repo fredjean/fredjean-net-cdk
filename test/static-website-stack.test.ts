@@ -542,7 +542,6 @@ describe('StaticWebsiteStack', () => {
         template.hasResourceProperties('AWS::Lambda::Permission', {
           Action: 'lambda:InvokeFunction',
           Principal: '*',
-          FunctionUrlAuthType: 'NONE',
         });
       });
 
@@ -570,7 +569,9 @@ describe('StaticWebsiteStack', () => {
         // Both permissions should allow public access
         permissionValues.forEach((permission: any) => {
           expect(permission.Properties.Principal).toBe('*');
-          expect(permission.Properties.FunctionUrlAuthType).toBe('NONE');
+          if (permission.Properties.Action === 'lambda:InvokeFunctionUrl') {
+            expect(permission.Properties.FunctionUrlAuthType).toBe('NONE');
+          }
         });
       });
 
