@@ -129,6 +129,14 @@ export class StaticWebsiteStack extends cdk.Stack {
       },
     });
 
+    // Add explicit lambda:InvokeFunction permission for Function URL
+    // Required as part of AWS's new authorization model (effective Nov 2026)
+    // Function URLs now require both InvokeFunctionUrl and InvokeFunction permissions
+    this.contactFormFunction.addPermission('InvokeFunctionPermission', {
+      principal: new iam.AnyPrincipal(),
+      action: 'lambda:InvokeFunction',
+    });
+
     // Extract domain from Function URL (remove https:// and trailing /)
     const functionUrlDomain = cdk.Fn.select(2, cdk.Fn.split('/', functionUrl.url));
 

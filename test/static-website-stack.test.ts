@@ -522,6 +522,87 @@ describe('StaticWebsiteStack', () => {
         },
       });
     });
+
+    describe('Lambda Function URL Permissions', () => {
+      test('creates Lambda permission for InvokeFunctionUrl', () => {
+        const app = new cdk.App();
+        const stack = new StaticWebsiteStack(app, 'TestStack');
+        const template = Template.fromStack(stack);
+
+        // Should have 2 Lambda permissions: InvokeFunctionUrl (auto-created) and InvokeFunction (explicit)
+        template.resourceCountIs('AWS::Lambda::Permission', 2);
+      });
+
+      test('Lambda has explicit InvokeFunction permission for Function URL', () => {
+        const app = new cdk.App();
+        const stack = new StaticWebsiteStack(app, 'TestStack');
+        const template = Template.fromStack(stack);
+
+        // Verify the explicit InvokeFunction permission exists
+        template.hasResourceProperties('AWS::Lambda::Permission', {
+          Action: 'lambda:InvokeFunction',
+          Principal: '*',
+          FunctionUrlAuthType: 'NONE',
+        });
+      });
+
+      test('Lambda has InvokeFunctionUrl permission', () => {
+        const app = new cdk.App();
+        const stack = new StaticWebsiteStack(app, 'TestStack');
+        const template = Template.fromStack(stack);
+
+        // Verify the auto-created InvokeFunctionUrl permission exists
+        template.hasResourceProperties('AWS::Lambda::Permission', {
+          Action: 'lambda:InvokeFunctionUrl',
+          Principal: '*',
+          FunctionUrlAuthType: 'NONE',
+        });
+      });
+
+      test('both permissions grant access to any principal', () => {
+        const app = new cdk.App();
+        const stack = new StaticWebsiteStack(app, 'TestStack');
+        const template = Template.fromStack(stack);
+
+        const permissions = template.findResources('AWS::Lambda::Permission');
+        const permissionValues = Object.values(permissions);
+
+        // Both permissions should allow public access
+        permissionValues.forEach((permission: any) => {
+          expect(permission.Properties.Principal).toBe('*');
+          expect(permission.Properties.FunctionUrlAuthType).toBe('NONE');
+        });
+      });
+
+      test('permissions reference the contact form Lambda function', () => {
+        const app = new cdk.App();
+        const stack = new StaticWebsiteStack(app, 'TestStack');
+        const template = Template.fromStack(stack);
+
+        const permissions = template.findResources('AWS::Lambda::Permission');
+        const permissionValues = Object.values(permissions);
+
+        // Both permissions should reference the same Lambda function
+        permissionValues.forEach((permission: any) => {
+          expect(permission.Properties.FunctionName).toHaveProperty('Fn::GetAtt');
+          expect(permission.Properties.FunctionName['Fn::GetAtt'][1]).toBe('Arn');
+        });
+      });
+
+      test('InvokeFunction permission has correct logical ID', () => {
+        const app = new cdk.App();
+        const stack = new StaticWebsiteStack(app, 'TestStack');
+        const template = Template.fromStack(stack);
+
+        const permissions = template.findResources('AWS::Lambda::Permission');
+        const invokePermissionKey = Object.keys(permissions).find(key => 
+          permissions[key].Properties.Action === 'lambda:InvokeFunction'
+        );
+
+        expect(invokePermissionKey).toBeDefined();
+        expect(invokePermissionKey).toContain('InvokeFunctionPermission');
+      });
+    });
   });
 
   describe('CloudFront Distribution', () => {
