@@ -35,10 +35,11 @@ jobs:
       - name: Run tests
         run: npm test
 
+      # Use CDK deployment role for infrastructure changes
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          role-to-assume: ${{ secrets.CDK_DEPLOYMENT_ROLE_ARN }}
           aws-region: ${{ secrets.AWS_REGION || 'us-east-1' }}
 
       - name: CDK diff

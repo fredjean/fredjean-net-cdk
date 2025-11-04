@@ -16,13 +16,15 @@ export interface StaticWebsiteStackProps extends cdk.StackProps {
   domainName?: string;
   hostedZoneId?: string;
   certificateArn?: string;
-  githubRepo?: string; // Format: 'owner/repo' (e.g., 'fredjean/fredjean-net-cdk')
+  cdkGithubRepo?: string; // Repository for CDK deployments (e.g., 'fredjean/fredjean-net-cdk')
+  websiteGithubRepo?: string; // Repository for website content deployments (e.g., 'fredjean/fredjean.net')
 }
 
 export class StaticWebsiteStack extends cdk.Stack {
   public readonly bucket: s3.Bucket;
   public readonly distribution: cloudfront.Distribution;
-  public readonly deploymentRole: iam.Role;
+  public readonly websiteDeploymentRole: iam.Role;
+  public readonly cdkDeploymentRole: iam.Role;
   public readonly logBucket: s3.Bucket;
   public readonly contactFormFunction: lambda.Function;
   public readonly athenaResultsBucket: s3.Bucket;
@@ -259,8 +261,9 @@ export class StaticWebsiteStack extends cdk.Stack {
       });
     }
 
-    // IAM role for GitHub Actions deployment
-    this.deploymentRole = new iam.Role(this, 'GitHubDeploymentRole', {
+    // IAM role for GitHub Actions website content deployment
+    this.websiteDeploymentRole = new iam.Role(this, 'WebsiteDeploymentRole', {
+      roleName: 'GitHubActions-WebsiteDeployment',
       assumedBy: new iam.FederatedPrincipal(
         `arn:aws:iam::${this.account}:oidc-provider/token.actions.githubusercontent.com`,
         {
@@ -268,20 +271,20 @@ export class StaticWebsiteStack extends cdk.Stack {
             'token.actions.githubusercontent.com:aud': 'sts.amazonaws.com',
           },
           StringLike: {
-            'token.actions.githubusercontent.com:sub': props?.githubRepo
-              ? `repo:${props.githubRepo}:*`
-              : 'repo:*:*', // Warning: Overly permissive! Set githubRepo property.
+            'token.actions.githubusercontent.com:sub': props?.websiteGithubRepo
+              ? `repo:${props.websiteGithubRepo}:*`
+              : 'repo:fredjean/fredjean.net:*',
           },
         },
         'sts:AssumeRoleWithWebIdentity'
       ),
-      description: 'Role for GitHub Actions to deploy static website',
+      description: 'Role for GitHub Actions to deploy static website content',
       maxSessionDuration: cdk.Duration.hours(1),
     });
 
-    // Grant deployment permissions
-    this.bucket.grantReadWrite(this.deploymentRole);
-    this.deploymentRole.addToPolicy(
+    // Grant website deployment permissions
+    this.bucket.grantReadWrite(this.websiteDeploymentRole);
+    this.websiteDeploymentRole.addToPolicy(
       new iam.PolicyStatement({
         effect: iam.Effect.ALLOW,
         actions: [
@@ -294,11 +297,91 @@ export class StaticWebsiteStack extends cdk.Stack {
         ],
       })
     );
-    this.deploymentRole.addToPolicy(
+    this.websiteDeploymentRole.addToPolicy(
       new iam.PolicyStatement({
         effect: iam.Effect.ALLOW,
         actions: ['s3:PutBucketVersioning'],
         resources: [this.bucket.bucketArn],
+      })
+    );
+
+    // IAM role for GitHub Actions CDK infrastructure deployment
+    this.cdkDeploymentRole = new iam.Role(this, 'CdkDeploymentRole', {
+      roleName: 'GitHubActions-CdkDeployment',
+      assumedBy: new iam.FederatedPrincipal(
+        `arn:aws:iam::${this.account}:oidc-provider/token.actions.githubusercontent.com`,
+        {
+          StringEquals: {
+            'token.actions.githubusercontent.com:aud': 'sts.amazonaws.com',
+          },
+          StringLike: {
+            'token.actions.githubusercontent.com:sub': props?.cdkGithubRepo
+              ? `repo:${props.cdkGithubRepo}:*`
+              : 'repo:fredjean/fredjean-net-cdk:*',
+          },
+        },
+        'sts:AssumeRoleWithWebIdentity'
+      ),
+      description: 'Role for GitHub Actions to deploy CDK infrastructure',
+      maxSessionDuration: cdk.Duration.hours(1),
+    });
+
+    // Grant CDK deployment permissions
+    // Allow assuming CDK execution roles
+    this.cdkDeploymentRole.addToPolicy(
+      new iam.PolicyStatement({
+        effect: iam.Effect.ALLOW,
+        actions: ['sts:AssumeRole'],
+        resources: [
+          `arn:aws:iam::${this.account}:role/cdk-*`,
+        ],
+      })
+    );
+
+    // Allow CloudFormation operations on CDK stacks
+    this.cdkDeploymentRole.addToPolicy(
+      new iam.PolicyStatement({
+        effect: iam.Effect.ALLOW,
+        actions: [
+          'cloudformation:DescribeStacks',
+          'cloudformation:DescribeStackEvents',
+          'cloudformation:DescribeChangeSet',
+          'cloudformation:CreateChangeSet',
+          'cloudformation:ExecuteChangeSet',
+          'cloudformation:DeleteChangeSet',
+          'cloudformation:GetTemplate',
+        ],
+        resources: [
+          `arn:aws:cloudformation:${this.region}:${this.account}:stack/CDKToolkit/*`,
+          `arn:aws:cloudformation:${this.region}:${this.account}:stack/${this.stackName}/*`,
+        ],
+      })
+    );
+
+    // Allow S3 operations on CDK staging bucket
+    this.cdkDeploymentRole.addToPolicy(
+      new iam.PolicyStatement({
+        effect: iam.Effect.ALLOW,
+        actions: [
+          's3:GetObject',
+          's3:PutObject',
+          's3:ListBucket',
+        ],
+        resources: [
+          `arn:aws:s3:::cdk-*-assets-${this.account}-${this.region}`,
+          `arn:aws:s3:::cdk-*-assets-${this.account}-${this.region}/*`,
+        ],
+      })
+    );
+
+    // Allow reading SSM parameters for CDK context
+    this.cdkDeploymentRole.addToPolicy(
+      new iam.PolicyStatement({
+        effect: iam.Effect.ALLOW,
+        actions: ['ssm:GetParameter'],
+        resources: [
+          `arn:aws:ssm:${this.region}:${this.account}:parameter/cdk-bootstrap/*`,
+        ],
       })
     );
 
@@ -411,9 +494,14 @@ export class StaticWebsiteStack extends cdk.Stack {
       description: 'CloudFront distribution domain name',
     });
 
-    new cdk.CfnOutput(this, 'DeploymentRoleArn', {
-      value: this.deploymentRole.roleArn,
-      description: 'IAM role ARN for GitHub Actions deployment',
+    new cdk.CfnOutput(this, 'WebsiteDeploymentRoleArn', {
+      value: this.websiteDeploymentRole.roleArn,
+      description: 'IAM role ARN for GitHub Actions website content deployment',
+    });
+
+    new cdk.CfnOutput(this, 'CdkDeploymentRoleArn', {
+      value: this.cdkDeploymentRole.roleArn,
+      description: 'IAM role ARN for GitHub Actions CDK infrastructure deployment',
     });
 
     new cdk.CfnOutput(this, 'ContactFormUrl', {

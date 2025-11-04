@@ -12,5 +12,6 @@ new StaticWebsiteStack(app, 'FredjeanNetStack', {
   domainName: 'fredjean.net',
   hostedZoneId: 'Z02134391O9J4AJZKAYN5',
   certificateArn: 'arn:aws:acm:us-east-1:374317007405:certificate/7e1fa454-f9e0-4a27-8a01-cca8549d786c',
-  githubRepo: 'fredjean/fredjean.net',
+  cdkGithubRepo: 'fredjean/fredjean-net-cdk',
+  websiteGithubRepo: 'fredjean/fredjean.net',
 });

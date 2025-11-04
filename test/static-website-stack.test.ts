@@ -267,7 +267,8 @@ describe('StaticWebsiteStack', () => {
   test('creates IAM role with restricted GitHub repo when specified', () => {
     const app = new cdk.App();
     const stack = new StaticWebsiteStack(app, 'TestStack', {
-      githubRepo: 'fredjean/fredjean-net-cdk',
+      cdkGithubRepo: 'fredjean/fredjean-net-cdk',
+      websiteGithubRepo: 'fredjean/fredjean.net',
     });
     const template = Template.fromStack(stack);
 
@@ -292,10 +293,10 @@ describe('StaticWebsiteStack', () => {
     const stack = new StaticWebsiteStack(app, 'TestStack');
     const template = Template.fromStack(stack);
 
-    // Find the policy attached to the deployment role
+    // Find the policy attached to the website deployment role
     const policies = template.findResources('AWS::IAM::Policy');
     const deploymentRolePolicy = Object.values(policies).find(
-      (policy: any) => policy.Properties.PolicyName.includes('GitHubDeploymentRole')
+      (policy: any) => policy.Properties.PolicyName.includes('WebsiteDeploymentRole')
     );
 
     expect(deploymentRolePolicy).toBeDefined();
@@ -415,7 +416,8 @@ describe('StaticWebsiteStack', () => {
     template.hasOutput('BucketName', {});
     template.hasOutput('DistributionId', {});
     template.hasOutput('DistributionDomainName', {});
-    template.hasOutput('DeploymentRoleArn', {});
+    template.hasOutput('WebsiteDeploymentRoleArn', {});
+    template.hasOutput('CdkDeploymentRoleArn', {});
     template.hasOutput('ContactFormUrl', {});
   });
 
