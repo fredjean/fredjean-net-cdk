@@ -1,4 +1,8 @@
 import { SESClient, SendEmailCommand } from '@aws-sdk/client-ses';
+import { BedrockRuntimeClient, InvokeModelCommand } from '@aws-sdk/client-bedrock-runtime';
+import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
+import { DynamoDBDocumentClient, PutCommand } from '@aws-sdk/lib-dynamodb';
+import { randomUUID } from 'crypto';
 
 // Configuration via environment variables (with fallbacks for local development)
 const CONFIG = {
@@ -10,6 +14,10 @@ const CONFIG = {
   maxNameLength: parseInt(process.env.MAX_NAME_LENGTH || '100', 10),
   maxPhoneLength: parseInt(process.env.MAX_PHONE_LENGTH || '20', 10),
   subjectWordCount: parseInt(process.env.SUBJECT_WORD_COUNT || '8', 10),
+  spamDetectionEnabled: process.env.SPAM_DETECTION_ENABLED === 'true',
+  spamModelId: process.env.SPAM_MODEL_ID || 'anthropic.claude-haiku-4-5-20251001-v1:0',
+  spamConfidenceThreshold: parseFloat(process.env.SPAM_CONFIDENCE_THRESHOLD || '0.8'),
+  blockedSubmissionsTable: process.env.BLOCKED_SUBMISSIONS_TABLE || 'contact-form-blocked-submissions',
 };
 
 // Validation schemas
@@ -103,37 +111,170 @@ function createResponse(statusCode, body, additionalHeaders = {}) {
 /**
  * Generate email subject from message
  */
-function generateSubject(message) {
+function generateSubject(message, classificationResult = null) {
   const words = message.replace(/\s+/g, ' ').trim().split(' ');
-  const subject = words.slice(0, CONFIG.subjectWordCount).join(' ');
-  return subject.length < message.length ? `${subject}...` : subject;
+  let subject = words.slice(0, CONFIG.subjectWordCount).join(' ');
+  subject = subject.length < message.length ? `${subject}...` : subject;
+  
+  // Add 🤨 emoji if not clean (SALES or low-confidence LEGITIMATE)
+  if (classificationResult) {
+    const isNotClean = classificationResult.classification === 'SALES' ||
+                      (classificationResult.classification === 'LEGITIMATE' && classificationResult.confidence < 0.9);
+    if (isNotClean) {
+      subject = `🤨 ${subject}`;
+    }
+  }
+  
+  return subject;
 }
 
 /**
  * Format email body
  */
-function formatEmailBody(contactData) {
-  return [
+function formatEmailBody(contactData, classificationResult = null) {
+  const lines = [
     'New Contact Form Submission',
     '',
     `Name: ${contactData.name}`,
     `Email: ${contactData.email}`,
     `Phone: ${contactData.phone}`,
     '',
-    'Message:',
-    contactData.message,
-    '',
-    '---',
-    `Submitted: ${new Date().toISOString()}`,
-  ].join('\n');
+  ];
+
+  // Add spam classification info if available
+  if (classificationResult) {
+    lines.push('Spam Detection:');
+    lines.push(`  Classification: ${classificationResult.classification}`);
+    lines.push(`  Confidence: ${(classificationResult.confidence * 100).toFixed(1)}%`);
+    lines.push(`  Reason: ${classificationResult.reason}`);
+    if (classificationResult.failedOpen) {
+      lines.push('  ⚠️  Bedrock classification failed - failed open');
+    }
+    lines.push('');
+  }
+
+  lines.push('Message:');
+  lines.push(contactData.message);
+  lines.push('');
+  lines.push('---');
+  lines.push(`Submitted: ${new Date().toISOString()}`);
+
+  return lines.join('\n');
+}
+
+/**
+ * Classify submission using Bedrock
+ */
+async function classifySubmission(contactData, bedrockClient) {
+  const prompt = `Analyze this contact form submission and classify it. Respond ONLY with valid JSON in this exact format:
+{"classification": "LEGITIMATE|SPAM|SALES|GIBBERISH", "confidence": 0.0-1.0, "reason": "brief explanation"}
+
+Classifications:
+- LEGITIMATE: Real person with genuine inquiry or feedback
+- SPAM: Automated spam, phishing attempts, or malicious content
+- SALES: Someone trying to sell services, products, or SEO services
+- GIBBERISH: Random text, keyboard mashing, or nonsensical content
+
+Submission:
+Name: ${contactData.name}
+Email: ${contactData.email}
+Phone: ${contactData.phone}
+Message: ${contactData.message}`;
+
+  try {
+    const payload = {
+      anthropic_version: 'bedrock-2023-05-31',
+      max_tokens: 200,
+      messages: [
+        {
+          role: 'user',
+          content: [{ type: 'text', text: prompt }],
+        },
+      ],
+    };
+
+    const command = new InvokeModelCommand({
+      modelId: CONFIG.spamModelId,
+      contentType: 'application/json',
+      body: JSON.stringify(payload),
+    });
+
+    const response = await bedrockClient.send(command);
+    const responseBody = JSON.parse(new TextDecoder().decode(response.body));
+    const classificationText = responseBody.content[0].text.trim();
+    
+    // Parse JSON response
+    const result = JSON.parse(classificationText);
+    
+    return {
+      classification: result.classification,
+      confidence: result.confidence,
+      reason: result.reason,
+    };
+  } catch (error) {
+    // Fail open: treat as legitimate if classification fails
+    console.error('Spam classification failed, failing open', { error: error.message });
+    return {
+      classification: 'LEGITIMATE',
+      confidence: 0.0,
+      reason: `Classification error: ${error.message}`,
+      failedOpen: true,
+    };
+  }
+}
+
+/**
+ * Log blocked submission to DynamoDB
+ */
+async function logBlockedSubmission(contactData, classificationResult, event, dynamoClient) {
+  try {
+    const submissionId = randomUUID();
+    const timestamp = Date.now();
+    const ttl = Math.floor(timestamp / 1000) + (90 * 24 * 60 * 60); // 90 days from now
+
+    // Extract IP address from event
+    const ipAddress = event.requestContext?.http?.sourceIp || 
+                     event.requestContext?.identity?.sourceIp || 
+                     'unknown';
+
+    const item = {
+      submissionId,
+      timestamp,
+      ttl,
+      name: contactData.name,
+      email: contactData.email,
+      phone: contactData.phone,
+      message: contactData.message,
+      classification: classificationResult.classification,
+      confidence: classificationResult.confidence,
+      reason: classificationResult.reason,
+      ipAddress,
+      blockedAt: new Date().toISOString(),
+    };
+
+    const command = new PutCommand({
+      TableName: CONFIG.blockedSubmissionsTable,
+      Item: item,
+    });
+
+    await dynamoClient.send(command);
+    return submissionId;
+  } catch (error) {
+    // Log error but don't fail the request
+    console.error('Failed to log blocked submission to DynamoDB', {
+      error: error.message,
+      stack: error.stack,
+    });
+    return null;
+  }
 }
 
 /**
  * Send email via SES
  */
-async function sendEmail(contactData, sesClient) {
-  const subject = generateSubject(contactData.message);
-  const body = formatEmailBody(contactData);
+async function sendEmail(contactData, sesClient, classificationResult = null) {
+  const subject = generateSubject(contactData.message, classificationResult);
+  const body = formatEmailBody(contactData, classificationResult);
   const replyTo = `${contactData.name} <${contactData.email}>`;
 
   const command = new SendEmailCommand({
@@ -163,9 +304,11 @@ async function sendEmail(contactData, sesClient) {
 /**
  * Main Lambda handler
  */
-export async function handler(event, context, sesClient) {
-  // Use injected client for testing, or create new one
-  const client = (sesClient && typeof sesClient === 'object') ? sesClient : new SESClient({ region: CONFIG.region });
+export async function handler(event, context, sesClient, bedrockClient, dynamoClient) {
+  // Use injected clients for testing, or create new ones
+  const sesClientInstance = (sesClient && typeof sesClient === 'object') ? sesClient : new SESClient({ region: CONFIG.region });
+  const bedrockClientInstance = (bedrockClient && typeof bedrockClient === 'object') ? bedrockClient : new BedrockRuntimeClient({ region: CONFIG.region });
+  const dynamoClientInstance = (dynamoClient && typeof dynamoClient === 'object') ? dynamoClient : DynamoDBDocumentClient.from(new DynamoDBClient({ region: CONFIG.region }));
 
   // Add request ID to all logs
   const requestId = context?.awsRequestId || context?.requestId || 'local';
@@ -228,8 +371,47 @@ export async function handler(event, context, sesClient) {
       throw error;
     }
 
-    // Send email
-    const messageId = await sendEmail(contactData, client);
+    // Spam detection (if enabled)
+    let classificationResult = null;
+    if (CONFIG.spamDetectionEnabled) {
+      classificationResult = await classifySubmission(contactData, bedrockClientInstance);
+      
+      log('info', 'Spam classification completed', {
+        classification: classificationResult.classification,
+        confidence: classificationResult.confidence,
+        failedOpen: classificationResult.failedOpen || false,
+      });
+
+      // Block if high-confidence spam or gibberish
+      const isSpamOrGibberish = ['SPAM', 'GIBBERISH'].includes(classificationResult.classification);
+      const isHighConfidence = classificationResult.confidence >= CONFIG.spamConfidenceThreshold;
+      
+      if (isSpamOrGibberish && isHighConfidence) {
+        // Log blocked submission to DynamoDB
+        const submissionId = await logBlockedSubmission(
+          contactData,
+          classificationResult,
+          event,
+          dynamoClientInstance
+        );
+        
+        log('warn', 'Blocked spam submission', {
+          submissionId,
+          classification: classificationResult.classification,
+          confidence: classificationResult.confidence,
+          reason: classificationResult.reason,
+        });
+
+        // Always return 200 OK to avoid revealing detection
+        return createResponse(200, {
+          message: 'Thank you for contacting us! Your message has been sent.',
+          success: true,
+        });
+      }
+    }
+
+    // Send email (legitimate submission or spam detection disabled)
+    const messageId = await sendEmail(contactData, sesClientInstance, classificationResult);
     
     log('info', 'Email sent successfully', { messageId });
 
@@ -251,5 +433,12 @@ export async function handler(event, context, sesClient) {
   }
 }
 
-// Export validation functions for testing
-export { validateField, validateContactForm, generateSubject, formatEmailBody };
+// Export functions for testing
+export { 
+  validateField, 
+  validateContactForm, 
+  generateSubject, 
+  formatEmailBody,
+  classifySubmission,
+  logBlockedSubmission,
+};

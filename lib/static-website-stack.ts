@@ -8,6 +8,7 @@ import * as route53 from 'aws-cdk-lib/aws-route53';
 import * as targets from 'aws-cdk-lib/aws-route53-targets';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
+import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
 import * as glue from 'aws-cdk-lib/aws-glue';
 import * as athena from 'aws-cdk-lib/aws-athena';
 import * as path from 'path';
@@ -27,6 +28,7 @@ export class StaticWebsiteStack extends cdk.Stack {
   public readonly cdkDeploymentRole: iam.Role;
   public readonly logBucket: s3.Bucket;
   public readonly contactFormFunction: lambda.Function;
+  public readonly blockedSubmissionsTable: dynamodb.Table;
   public readonly athenaResultsBucket: s3.Bucket;
   public readonly glueDatabase: glue.CfnDatabase;
   public readonly glueTable: glue.CfnTable;
@@ -93,6 +95,18 @@ export class StaticWebsiteStack extends cdk.Stack {
       );
     }
 
+    // DynamoDB table for blocked contact form submissions
+    this.blockedSubmissionsTable = new dynamodb.Table(this, 'BlockedSubmissionsTable', {
+      tableName: 'contact-form-blocked-submissions',
+      partitionKey: { name: 'submissionId', type: dynamodb.AttributeType.STRING },
+      sortKey: { name: 'timestamp', type: dynamodb.AttributeType.NUMBER },
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      encryption: dynamodb.TableEncryption.AWS_MANAGED,
+      removalPolicy: cdk.RemovalPolicy.RETAIN,
+      timeToLiveAttribute: 'ttl',
+      pointInTimeRecovery: true,
+    });
+
     // Lambda function for contact form (must be created before CloudFront distribution)
     this.contactFormFunction = new lambda.Function(this, 'ContactFormFunction', {
       runtime: lambda.Runtime.NODEJS_22_X,
@@ -100,14 +114,18 @@ export class StaticWebsiteStack extends cdk.Stack {
       code: lambda.Code.fromAsset(path.join(__dirname, '../lambda/contact-form'), {
         exclude: ['*.test.mjs', 'coverage', 'README.md', 'README-old.md', 'vitest.config.*'],
       }),
-      timeout: cdk.Duration.seconds(10),
-      memorySize: 128,
-      description: 'Contact form handler that sends emails via SES',
+      timeout: cdk.Duration.seconds(20),
+      memorySize: 256,
+      description: 'Contact form handler that sends emails via SES with spam detection',
       environment: {
         NODE_OPTIONS: '--enable-source-maps',
         TO_ADDRESS: 'Fred Jean <fred@fredjean.net>',
         FROM_ADDRESS: 'Contact Form <hello@fredjean.net>',
         ALLOWED_ORIGIN: props?.domainName ? `https://${props.domainName}` : '*',
+        SPAM_DETECTION_ENABLED: 'true',
+        SPAM_MODEL_ID: 'anthropic.claude-haiku-4-5-20251001-v1:0',
+        SPAM_CONFIDENCE_THRESHOLD: '0.8',
+        BLOCKED_SUBMISSIONS_TABLE: this.blockedSubmissionsTable.tableName,
       },
     });
 
@@ -119,6 +137,20 @@ export class StaticWebsiteStack extends cdk.Stack {
         resources: ['*'],
       })
     );
+
+    // Grant Bedrock permissions to Lambda
+    this.contactFormFunction.addToRolePolicy(
+      new iam.PolicyStatement({
+        effect: iam.Effect.ALLOW,
+        actions: ['bedrock:InvokeModel'],
+        resources: [
+          `arn:aws:bedrock:${this.region}::foundation-model/anthropic.claude-haiku-4-5-20251001-v1:0`,
+        ],
+      })
+    );
+
+    // Grant DynamoDB permissions to Lambda
+    this.blockedSubmissionsTable.grantWriteData(this.contactFormFunction);
 
     // Create Function URL for Lambda
     const functionUrl = this.contactFormFunction.addFunctionUrl({

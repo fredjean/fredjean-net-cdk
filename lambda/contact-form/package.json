@@ -5,12 +5,17 @@
   "type": "module",
   "main": "index.mjs",
   "scripts": {
-    "test": "vitest run",
+    "test": "vitest run index.test.mjs",
+    "test:spam-enabled": "env SPAM_DETECTION_ENABLED=true vitest run index.spam-enabled.test.mjs",
+    "test:all": "npm test && npm run test:spam-enabled",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage"
   },
   "dependencies": {
-    "@aws-sdk/client-ses": "^3.0.0"
+    "@aws-sdk/client-ses": "^3.0.0",
+    "@aws-sdk/client-bedrock-runtime": "^3.0.0",
+    "@aws-sdk/client-dynamodb": "^3.0.0",
+    "@aws-sdk/lib-dynamodb": "^3.0.0"
   },
   "devDependencies": {
     "vitest": "^2.0.0",
