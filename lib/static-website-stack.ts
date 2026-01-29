@@ -138,14 +138,19 @@ export class StaticWebsiteStack extends cdk.Stack {
       })
     );
 
-    // Grant Bedrock permissions to Lambda for foundation models and inference profiles
+    // Grant Bedrock permissions to Lambda for cross-region inference
+    // Cross-region inference profiles require permissions in all potential destination regions
     this.contactFormFunction.addToRolePolicy(
       new iam.PolicyStatement({
         effect: iam.Effect.ALLOW,
         actions: ['bedrock:InvokeModel'],
         resources: [
-          `arn:aws:bedrock:${this.region}::foundation-model/*`,
+          // Inference profile in source region
           `arn:aws:bedrock:${this.region}:${this.account}:inference-profile/*`,
+          // Foundation models in all US regions (destination regions for US inference profile)
+          'arn:aws:bedrock:us-east-1::foundation-model/*',
+          'arn:aws:bedrock:us-east-2::foundation-model/*',
+          'arn:aws:bedrock:us-west-2::foundation-model/*',
         ],
       })
     );
