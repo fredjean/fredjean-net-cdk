@@ -32,8 +32,16 @@ jobs:
       - name: Build
         run: npm run build
 
-      - name: Run tests
+      - name: Run CDK tests
         run: npm test
+
+      - name: Install Lambda dependencies
+        run: npm ci
+        working-directory: lambda/contact-form
+
+      - name: Run Lambda tests
+        run: npm run test:all
+        working-directory: lambda/contact-form
 
       # Use CDK deployment role for infrastructure changes
       - name: Configure AWS credentials
