@@ -155,6 +155,19 @@ export class StaticWebsiteStack extends cdk.Stack {
       })
     );
 
+    // Grant AWS Marketplace permissions for automatic model subscription
+    // Anthropic models require a one-time AWS Marketplace subscription that is created automatically on first use
+    this.contactFormFunction.addToRolePolicy(
+      new iam.PolicyStatement({
+        effect: iam.Effect.ALLOW,
+        actions: [
+          'aws-marketplace:ViewSubscriptions',
+          'aws-marketplace:Subscribe',
+        ],
+        resources: ['*'],
+      })
+    );
+
     // Grant DynamoDB permissions to Lambda
     this.blockedSubmissionsTable.grantWriteData(this.contactFormFunction);
 
