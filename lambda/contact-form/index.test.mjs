@@ -243,6 +243,42 @@ describe('Contact Form Lambda', () => {
       expect(result.classification).toBe('LEGITIMATE');
       expect(result.failedOpen).toBe(true);
     });
+
+    it('should handle JSON wrapped in markdown code fences', async () => {
+      const mockBedrockClient = {
+        send: vi.fn().mockResolvedValue({
+          body: new TextEncoder().encode(JSON.stringify({
+            content: [{
+              text: '```json\n{"classification": "LEGITIMATE", "confidence": 0.95, "reason": "Genuine inquiry"}\n```'
+            }]
+          })),
+        }),
+      };
+
+      const result = await classifySubmission(contactData, mockBedrockClient);
+
+      expect(result.classification).toBe('LEGITIMATE');
+      expect(result.confidence).toBe(0.95);
+      expect(result.reason).toBe('Genuine inquiry');
+    });
+
+    it('should handle JSON wrapped in code fences without language identifier', async () => {
+      const mockBedrockClient = {
+        send: vi.fn().mockResolvedValue({
+          body: new TextEncoder().encode(JSON.stringify({
+            content: [{
+              text: '```\n{"classification": "SPAM", "confidence": 0.98, "reason": "Phishing attempt"}\n```'
+            }]
+          })),
+        }),
+      };
+
+      const result = await classifySubmission(contactData, mockBedrockClient);
+
+      expect(result.classification).toBe('SPAM');
+      expect(result.confidence).toBe(0.98);
+      expect(result.reason).toBe('Phishing attempt');
+    });
   });
 
   describe('logBlockedSubmission', () => {

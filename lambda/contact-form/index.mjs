@@ -201,7 +201,14 @@ Message: ${contactData.message}`;
 
     const response = await bedrockClient.send(command);
     const responseBody = JSON.parse(new TextDecoder().decode(response.body));
-    const classificationText = responseBody.content[0].text.trim();
+    let classificationText = responseBody.content[0].text.trim();
+    
+    // Remove markdown code fences if present (```json ... ```)
+    if (classificationText.startsWith('```')) {
+      classificationText = classificationText
+        .replace(/^```(?:json)?\n/, '') // Remove opening fence
+        .replace(/\n```$/, '');          // Remove closing fence
+    }
     
     // Parse JSON response
     const result = JSON.parse(classificationText);
