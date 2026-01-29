@@ -138,13 +138,14 @@ export class StaticWebsiteStack extends cdk.Stack {
       })
     );
 
-    // Grant Bedrock permissions to Lambda for inference profile
+    // Grant Bedrock permissions to Lambda for foundation models and inference profiles
     this.contactFormFunction.addToRolePolicy(
       new iam.PolicyStatement({
         effect: iam.Effect.ALLOW,
         actions: ['bedrock:InvokeModel'],
         resources: [
-          `arn:aws:bedrock:${this.region}:${this.account}:inference-profile/us.anthropic.claude-haiku-4-5-20251001-v1:0`,
+          `arn:aws:bedrock:${this.region}::foundation-model/*`,
+          `arn:aws:bedrock:${this.region}:${this.account}:inference-profile/*`,
         ],
       })
     );
