@@ -123,7 +123,7 @@ export class StaticWebsiteStack extends cdk.Stack {
         FROM_ADDRESS: 'Contact Form <hello@fredjean.net>',
         ALLOWED_ORIGIN: props?.domainName ? `https://${props.domainName}` : '*',
         SPAM_DETECTION_ENABLED: 'true',
-        SPAM_MODEL_ID: 'anthropic.claude-haiku-4-5-20251001-v1:0',
+        SPAM_MODEL_ID: 'us.anthropic.claude-haiku-4-5-20251001-v1:0',
         SPAM_CONFIDENCE_THRESHOLD: '0.8',
         BLOCKED_SUBMISSIONS_TABLE: this.blockedSubmissionsTable.tableName,
       },
@@ -145,6 +145,7 @@ export class StaticWebsiteStack extends cdk.Stack {
         actions: ['bedrock:InvokeModel'],
         resources: [
           `arn:aws:bedrock:${this.region}::foundation-model/anthropic.claude-haiku-4-5-20251001-v1:0`,
+          `arn:aws:bedrock:${this.region}:${this.account}:inference-profile/us.anthropic.claude-haiku-4-5-20251001-v1:0`,
         ],
       })
     );
