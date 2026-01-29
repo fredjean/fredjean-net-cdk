@@ -422,6 +422,24 @@ describe('StaticWebsiteStack', () => {
   });
 
   describe('Lambda Contact Form', () => {
+    test('creates DynamoDB table for blocked submissions', () => {
+      const app = new cdk.App();
+      const stack = new StaticWebsiteStack(app, 'TestStack');
+      const template = Template.fromStack(stack);
+
+      template.hasResourceProperties('AWS::DynamoDB::Table', {
+        TableName: 'contact-form-blocked-submissions',
+        BillingMode: 'PAY_PER_REQUEST',
+        PointInTimeRecoverySpecification: {
+          PointInTimeRecoveryEnabled: true,
+        },
+        TimeToLiveSpecification: {
+          Enabled: true,
+          AttributeName: 'ttl',
+        },
+      });
+    });
+
     test('creates Lambda function with correct runtime', () => {
       const app = new cdk.App();
       const stack = new StaticWebsiteStack(app, 'TestStack');
@@ -430,9 +448,9 @@ describe('StaticWebsiteStack', () => {
       template.hasResourceProperties('AWS::Lambda::Function', {
         Runtime: 'nodejs22.x',
         Handler: 'index.handler',
-        Timeout: 10,
-        MemorySize: 128,
-        Description: 'Contact form handler that sends emails via SES',
+        Timeout: 20,
+        MemorySize: 256,
+        Description: 'Contact form handler that sends emails via SES with spam detection',
       });
     });
 
@@ -441,17 +459,96 @@ describe('StaticWebsiteStack', () => {
       const stack = new StaticWebsiteStack(app, 'TestStack');
       const template = Template.fromStack(stack);
 
-      template.hasResourceProperties('AWS::IAM::Policy', {
-        PolicyDocument: {
-          Statement: [
-            {
-              Action: ['ses:SendEmail', 'ses:SendRawEmail'],
-              Effect: 'Allow',
-              Resource: '*',
-            },
-          ],
-        },
-      });
+      // Find the Lambda execution role's policy
+      const policies = template.findResources('AWS::IAM::Policy');
+      const lambdaPolicy = Object.values(policies).find(
+        (policy: any) => {
+          const statements = policy.Properties.PolicyDocument.Statement;
+          return statements.some(
+            (stmt: any) => 
+              Array.isArray(stmt.Action) && 
+              stmt.Action.includes('ses:SendEmail')
+          );
+        }
+      );
+
+      expect(lambdaPolicy).toBeDefined();
+      const statements = lambdaPolicy?.Properties.PolicyDocument.Statement;
+      const sesStatement = statements.find(
+        (stmt: any) => 
+          Array.isArray(stmt.Action) && 
+          stmt.Action.includes('ses:SendEmail')
+      );
+
+      expect(sesStatement).toBeDefined();
+      expect(sesStatement.Effect).toBe('Allow');
+      expect(sesStatement.Action).toContain('ses:SendEmail');
+      expect(sesStatement.Action).toContain('ses:SendRawEmail');
+      expect(sesStatement.Resource).toBe('*');
+    });
+
+    test('Lambda function has Bedrock permissions', () => {
+      const app = new cdk.App();
+      const stack = new StaticWebsiteStack(app, 'TestStack');
+      const template = Template.fromStack(stack);
+
+      // Find the Lambda execution role's policy
+      const policies = template.findResources('AWS::IAM::Policy');
+      const lambdaPolicy = Object.values(policies).find(
+        (policy: any) => {
+          const statements = policy.Properties.PolicyDocument.Statement;
+          return statements.some(
+            (stmt: any) => {
+              const actions = Array.isArray(stmt.Action) ? stmt.Action : [stmt.Action];
+              return actions.includes('bedrock:InvokeModel');
+            }
+          );
+        }
+      );
+
+      expect(lambdaPolicy).toBeDefined();
+      const statements = lambdaPolicy?.Properties.PolicyDocument.Statement;
+      const bedrockStatement = statements.find(
+        (stmt: any) => {
+          const actions = Array.isArray(stmt.Action) ? stmt.Action : [stmt.Action];
+          return actions.includes('bedrock:InvokeModel');
+        }
+      );
+
+      expect(bedrockStatement).toBeDefined();
+      expect(bedrockStatement.Effect).toBe('Allow');
+      const actions = Array.isArray(bedrockStatement.Action) ? bedrockStatement.Action : [bedrockStatement.Action];
+      expect(actions).toContain('bedrock:InvokeModel');
+    });
+
+    test('Lambda function has DynamoDB permissions', () => {
+      const app = new cdk.App();
+      const stack = new StaticWebsiteStack(app, 'TestStack');
+      const template = Template.fromStack(stack);
+
+      // Find the Lambda execution role's policy
+      const policies = template.findResources('AWS::IAM::Policy');
+      const lambdaPolicy = Object.values(policies).find(
+        (policy: any) => {
+          const statements = policy.Properties.PolicyDocument.Statement;
+          return statements.some(
+            (stmt: any) => 
+              Array.isArray(stmt.Action) && 
+              stmt.Action.some((action: string) => action.startsWith('dynamodb:'))
+          );
+        }
+      );
+
+      expect(lambdaPolicy).toBeDefined();
+      const statements = lambdaPolicy?.Properties.PolicyDocument.Statement;
+      const dynamoStatement = statements.find(
+        (stmt: any) => 
+          Array.isArray(stmt.Action) && 
+          stmt.Action.some((action: string) => action.startsWith('dynamodb:'))
+      );
+
+      expect(dynamoStatement).toBeDefined();
+      expect(dynamoStatement.Effect).toBe('Allow');
     });
 
     test('creates Lambda Function URL', () => {

@@ -104,7 +104,7 @@ export class StaticWebsiteStack extends cdk.Stack {
       encryption: dynamodb.TableEncryption.AWS_MANAGED,
       removalPolicy: cdk.RemovalPolicy.RETAIN,
       timeToLiveAttribute: 'ttl',
-      pointInTimeRecovery: true,
+      pointInTimeRecoverySpecification: { pointInTimeRecoveryEnabled: true },
     });
 
     // Lambda function for contact form (must be created before CloudFront distribution)
