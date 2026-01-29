@@ -1,10 +1,12 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import {
   handler,
   validateField,
   validateContactForm,
   generateSubject,
   formatEmailBody,
+  classifySubmission,
+  logBlockedSubmission,
 } from './index.mjs';
 
 describe('Contact Form Lambda', () => {
@@ -115,6 +117,208 @@ describe('Contact Form Lambda', () => {
       // Since subject.length (11) < message.length (17), adds '...'
       expect(generateSubject('  Hello world  ')).toBe('Hello world...');
     });
+
+    it('should add 🤨 emoji for SALES classification', () => {
+      const classification = { classification: 'SALES', confidence: 0.95, reason: 'SEO pitch' };
+      expect(generateSubject('Hello world', classification)).toBe('🤨 Hello world');
+    });
+
+    it('should add 🤨 emoji for low-confidence LEGITIMATE', () => {
+      const classification = { classification: 'LEGITIMATE', confidence: 0.7, reason: 'Uncertain' };
+      expect(generateSubject('Hello world', classification)).toBe('🤨 Hello world');
+    });
+
+    it('should not add emoji for high-confidence LEGITIMATE', () => {
+      const classification = { classification: 'LEGITIMATE', confidence: 0.95, reason: 'Genuine inquiry' };
+      expect(generateSubject('Hello world', classification)).toBe('Hello world');
+    });
+  });
+
+  describe('classifySubmission', () => {
+    const contactData = {
+      name: 'John Doe',
+      email: 'john@example.com',
+      phone: '555-1234',
+      message: 'I have a question about your services',
+    };
+
+    it('should classify legitimate submission', async () => {
+      const mockBedrockClient = {
+        send: vi.fn().mockResolvedValue({
+          body: new TextEncoder().encode(JSON.stringify({
+            content: [{
+              text: '{"classification": "LEGITIMATE", "confidence": 0.95, "reason": "Genuine inquiry"}'
+            }]
+          })),
+        }),
+      };
+
+      const result = await classifySubmission(contactData, mockBedrockClient);
+
+      expect(result.classification).toBe('LEGITIMATE');
+      expect(result.confidence).toBe(0.95);
+      expect(result.reason).toBe('Genuine inquiry');
+      expect(mockBedrockClient.send).toHaveBeenCalledTimes(1);
+    });
+
+    it('should classify spam submission', async () => {
+      const mockBedrockClient = {
+        send: vi.fn().mockResolvedValue({
+          body: new TextEncoder().encode(JSON.stringify({
+            content: [{
+              text: '{"classification": "SPAM", "confidence": 0.98, "reason": "Contains phishing links"}'
+            }]
+          })),
+        }),
+      };
+
+      const result = await classifySubmission(contactData, mockBedrockClient);
+
+      expect(result.classification).toBe('SPAM');
+      expect(result.confidence).toBe(0.98);
+      expect(result.reason).toBe('Contains phishing links');
+    });
+
+    it('should classify sales pitch', async () => {
+      const mockBedrockClient = {
+        send: vi.fn().mockResolvedValue({
+          body: new TextEncoder().encode(JSON.stringify({
+            content: [{
+              text: '{"classification": "SALES", "confidence": 0.92, "reason": "Offering SEO services"}'
+            }]
+          })),
+        }),
+      };
+
+      const result = await classifySubmission(contactData, mockBedrockClient);
+
+      expect(result.classification).toBe('SALES');
+      expect(result.confidence).toBe(0.92);
+      expect(result.reason).toBe('Offering SEO services');
+    });
+
+    it('should classify gibberish', async () => {
+      const mockBedrockClient = {
+        send: vi.fn().mockResolvedValue({
+          body: new TextEncoder().encode(JSON.stringify({
+            content: [{
+              text: '{"classification": "GIBBERISH", "confidence": 0.99, "reason": "Random keyboard mashing"}'
+            }]
+          })),
+        }),
+      };
+
+      const result = await classifySubmission(contactData, mockBedrockClient);
+
+      expect(result.classification).toBe('GIBBERISH');
+      expect(result.confidence).toBe(0.99);
+      expect(result.reason).toBe('Random keyboard mashing');
+    });
+
+    it('should fail open when Bedrock throws error', async () => {
+      const mockBedrockClient = {
+        send: vi.fn().mockRejectedValue(new Error('Bedrock timeout')),
+      };
+
+      vi.spyOn(console, 'error').mockImplementation(() => {});
+      const result = await classifySubmission(contactData, mockBedrockClient);
+
+      expect(result.classification).toBe('LEGITIMATE');
+      expect(result.confidence).toBe(0.0);
+      expect(result.failedOpen).toBe(true);
+      expect(result.reason).toContain('Classification error');
+      expect(console.error).toHaveBeenCalled();
+    });
+
+    it('should fail open when response parsing fails', async () => {
+      const mockBedrockClient = {
+        send: vi.fn().mockResolvedValue({
+          body: new TextEncoder().encode('invalid json'),
+        }),
+      };
+
+      vi.spyOn(console, 'error').mockImplementation(() => {});
+      const result = await classifySubmission(contactData, mockBedrockClient);
+
+      expect(result.classification).toBe('LEGITIMATE');
+      expect(result.failedOpen).toBe(true);
+    });
+  });
+
+  describe('logBlockedSubmission', () => {
+    const contactData = {
+      name: 'Spammer',
+      email: 'spam@example.com',
+      phone: '555-9999',
+      message: 'Buy our SEO services!',
+    };
+
+    const classificationResult = {
+      classification: 'SPAM',
+      confidence: 0.95,
+      reason: 'Automated spam',
+    };
+
+    const event = {
+      requestContext: {
+        http: {
+          sourceIp: '192.168.1.100',
+        },
+      },
+    };
+
+    it('should log blocked submission to DynamoDB', async () => {
+      const mockDynamoClient = {
+        send: vi.fn().mockResolvedValue({}),
+      };
+
+      const submissionId = await logBlockedSubmission(
+        contactData,
+        classificationResult,
+        event,
+        mockDynamoClient
+      );
+
+      expect(submissionId).toBeTruthy();
+      expect(mockDynamoClient.send).toHaveBeenCalledTimes(1);
+
+      const putCommand = mockDynamoClient.send.mock.calls[0][0];
+      expect(putCommand.input.Item.name).toBe('Spammer');
+      expect(putCommand.input.Item.email).toBe('spam@example.com');
+      expect(putCommand.input.Item.classification).toBe('SPAM');
+      expect(putCommand.input.Item.confidence).toBe(0.95);
+      expect(putCommand.input.Item.ipAddress).toBe('192.168.1.100');
+      expect(putCommand.input.Item.ttl).toBeGreaterThan(Date.now() / 1000);
+    });
+
+    it('should handle missing IP address gracefully', async () => {
+      const mockDynamoClient = {
+        send: vi.fn().mockResolvedValue({}),
+      };
+
+      const eventNoIp = {};
+      await logBlockedSubmission(contactData, classificationResult, eventNoIp, mockDynamoClient);
+
+      const putCommand = mockDynamoClient.send.mock.calls[0][0];
+      expect(putCommand.input.Item.ipAddress).toBe('unknown');
+    });
+
+    it('should handle DynamoDB errors gracefully', async () => {
+      const mockDynamoClient = {
+        send: vi.fn().mockRejectedValue(new Error('DynamoDB error')),
+      };
+
+      vi.spyOn(console, 'error').mockImplementation(() => {});
+      const result = await logBlockedSubmission(
+        contactData,
+        classificationResult,
+        event,
+        mockDynamoClient
+      );
+
+      expect(result).toBe(null);
+      expect(console.error).toHaveBeenCalled();
+    });
   });
 
   describe('formatEmailBody', () => {
@@ -139,20 +343,73 @@ describe('Contact Form Lambda', () => {
       const body = formatEmailBody(contactData);
       expect(body).toMatch(/Submitted: \d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/);
     });
+
+    it('should include spam classification when provided', () => {
+      const classification = {
+        classification: 'SALES',
+        confidence: 0.85,
+        reason: 'Offering SEO services',
+      };
+      const body = formatEmailBody(contactData, classification);
+      expect(body).toContain('Spam Detection:');
+      expect(body).toContain('Classification: SALES');
+      expect(body).toContain('Confidence: 85.0%');
+      expect(body).toContain('Reason: Offering SEO services');
+    });
+
+    it('should include failedOpen warning when Bedrock fails', () => {
+      const classification = {
+        classification: 'LEGITIMATE',
+        confidence: 0.0,
+        reason: 'Classification error',
+        failedOpen: true,
+      };
+      const body = formatEmailBody(contactData, classification);
+      expect(body).toContain('⚠️  Bedrock classification failed - failed open');
+    });
   });
 
-  describe('handler', () => {
+  describe('handler - spam detection disabled', () => {
     let mockSESClient;
+    let mockBedrockClient;
+    let mockDynamoClient;
     let mockContext;
+    let originalEnv;
 
     beforeEach(() => {
+      // Save and disable spam detection
+      originalEnv = process.env.SPAM_DETECTION_ENABLED;
+      process.env.SPAM_DETECTION_ENABLED = 'false';
+
       mockSESClient = {
         send: vi.fn().mockResolvedValue({ MessageId: 'test-message-id' }),
+      };
+      mockBedrockClient = {
+        send: vi.fn().mockResolvedValue({
+          body: new TextEncoder().encode(JSON.stringify({
+            content: [{
+              text: '{"classification": "LEGITIMATE", "confidence": 0.95, "reason": "Genuine inquiry"}'
+            }]
+          })),
+        }),
+      };
+      mockDynamoClient = {
+        send: vi.fn().mockResolvedValue({}),
       };
       mockContext = {
         requestId: 'test-request-id',
       };
       vi.spyOn(console, 'log').mockImplementation(() => {});
+      vi.spyOn(console, 'error').mockImplementation(() => {});
+    });
+
+    afterEach(() => {
+      // Restore environment
+      if (originalEnv === undefined) {
+        delete process.env.SPAM_DETECTION_ENABLED;
+      } else {
+        process.env.SPAM_DETECTION_ENABLED = originalEnv;
+      }
     });
 
     it('should handle valid contact form submission with JSON', async () => {
@@ -165,7 +422,7 @@ describe('Contact Form Lambda', () => {
         }),
       };
 
-      const response = await handler(event, mockContext, mockSESClient);
+      const response = await handler(event, mockContext, mockSESClient, mockBedrockClient, mockDynamoClient);
 
       expect(response.statusCode).toBe(200);
       expect(JSON.parse(response.body)).toEqual({
@@ -173,6 +430,8 @@ describe('Contact Form Lambda', () => {
         success: true,
       });
       expect(mockSESClient.send).toHaveBeenCalledTimes(1);
+      expect(mockBedrockClient.send).not.toHaveBeenCalled(); // Spam detection disabled
+      expect(mockDynamoClient.send).not.toHaveBeenCalled(); // Not logged
     });
 
     it('should handle URL-encoded form data', async () => {
@@ -184,7 +443,7 @@ describe('Contact Form Lambda', () => {
         },
       };
 
-      const response = await handler(event, mockContext, mockSESClient);
+      const response = await handler(event, mockContext, mockSESClient, mockBedrockClient, mockDynamoClient);
 
       expect(response.statusCode).toBe(200);
       expect(JSON.parse(response.body)).toEqual({
@@ -205,7 +464,7 @@ describe('Contact Form Lambda', () => {
         },
       };
 
-      const response = await handler(event, mockContext, mockSESClient);
+      const response = await handler(event, mockContext, mockSESClient, mockBedrockClient, mockDynamoClient);
 
       expect(response.statusCode).toBe(200);
       expect(JSON.parse(response.body)).toEqual({
@@ -221,7 +480,7 @@ describe('Contact Form Lambda', () => {
         body: null,
       };
 
-      const response = await handler(event, mockContext, mockSESClient);
+      const response = await handler(event, mockContext, mockSESClient, mockBedrockClient, mockDynamoClient);
 
       expect(response.statusCode).toBe(200);
       expect(mockSESClient.send).not.toHaveBeenCalled();
@@ -232,7 +491,7 @@ describe('Contact Form Lambda', () => {
         body: 'not valid json',
       };
 
-      const response = await handler(event, mockContext, mockSESClient);
+      const response = await handler(event, mockContext, mockSESClient, mockBedrockClient, mockDynamoClient);
 
       expect(response.statusCode).toBe(400);
       expect(JSON.parse(response.body)).toEqual({
@@ -250,7 +509,7 @@ describe('Contact Form Lambda', () => {
         }),
       };
 
-      const response = await handler(event, mockContext, mockSESClient);
+      const response = await handler(event, mockContext, mockSESClient, mockBedrockClient, mockDynamoClient);
 
       expect(response.statusCode).toBe(400);
       const body = JSON.parse(response.body);
@@ -269,7 +528,7 @@ describe('Contact Form Lambda', () => {
         }),
       };
 
-      const response = await handler(event, mockContext, mockSESClient);
+      const response = await handler(event, mockContext, mockSESClient, mockBedrockClient, mockDynamoClient);
 
       expect(response.statusCode).toBe(400);
       const body = JSON.parse(response.body);
@@ -287,7 +546,7 @@ describe('Contact Form Lambda', () => {
         }),
       };
 
-      const response = await handler(event, mockContext, mockSESClient);
+      const response = await handler(event, mockContext, mockSESClient, mockBedrockClient, mockDynamoClient);
 
       expect(response.statusCode).toBe(400);
       const body = JSON.parse(response.body);
@@ -307,7 +566,7 @@ describe('Contact Form Lambda', () => {
         }),
       };
 
-      const response = await handler(event, mockContext, mockSESClient);
+      const response = await handler(event, mockContext, mockSESClient, mockBedrockClient, mockDynamoClient);
 
       expect(response.statusCode).toBe(500);
       expect(JSON.parse(response.body)).toEqual({
@@ -325,7 +584,7 @@ describe('Contact Form Lambda', () => {
         }),
       };
 
-      const response = await handler(event, mockContext, mockSESClient);
+      const response = await handler(event, mockContext, mockSESClient, mockBedrockClient, mockDynamoClient);
 
       expect(response.headers).toHaveProperty('Access-Control-Allow-Origin');
       expect(response.headers).toHaveProperty('Access-Control-Allow-Headers');
@@ -343,7 +602,7 @@ describe('Contact Form Lambda', () => {
         }),
       };
 
-      await handler(event, mockContext, mockSESClient);
+      await handler(event, mockContext, mockSESClient, mockBedrockClient, mockDynamoClient);
 
       expect(mockSESClient.send).toHaveBeenCalled();
       const sentCommand = mockSESClient.send.mock.calls[0][0];
@@ -361,7 +620,7 @@ describe('Contact Form Lambda', () => {
         }),
       };
 
-      await handler(event, mockContext, mockSESClient);
+      await handler(event, mockContext, mockSESClient, mockBedrockClient, mockDynamoClient);
 
       expect(console.log).toHaveBeenCalled();
       const logCalls = console.log.mock.calls;
@@ -385,7 +644,7 @@ describe('Contact Form Lambda', () => {
         }),
       };
 
-      await handler(event, lambdaContext, mockSESClient);
+      await handler(event, lambdaContext, mockSESClient, mockBedrockClient, mockDynamoClient);
 
       expect(console.log).toHaveBeenCalled();
       const logCalls = console.log.mock.calls;
@@ -456,7 +715,7 @@ describe('Contact Form Lambda', () => {
         }),
       };
 
-      const response = await handler(event, mockContext, customMockClient);
+      const response = await handler(event, mockContext, customMockClient, mockBedrockClient, mockDynamoClient);
 
       expect(response.statusCode).toBe(200);
       expect(customMockClient.send).toHaveBeenCalledTimes(1);
@@ -477,7 +736,7 @@ describe('Contact Form Lambda', () => {
       };
 
       // Test with null context
-      const response = await handler(event, null, mockSESClient);
+      const response = await handler(event, null, mockSESClient, mockBedrockClient, mockDynamoClient);
 
       expect(response.statusCode).toBe(200);
       expect(mockSESClient.send).toHaveBeenCalled();
@@ -510,10 +769,48 @@ describe('Contact Form Lambda', () => {
         functionName: 'contact-form-function',
       };
 
-      const response = await handler(functionUrlEvent, lambdaContext, mockSESClient);
+      const response = await handler(functionUrlEvent, lambdaContext, mockSESClient, mockBedrockClient, mockDynamoClient);
 
       expect(response.statusCode).toBe(200);
       expect(mockSESClient.send).toHaveBeenCalledTimes(1);
+    });
+    
+    it('should not call Bedrock when spam detection is disabled', async () => {
+      const event = {
+        body: JSON.stringify({
+          name: 'John Doe',
+          email: 'john@example.com',
+          phone: '555-1234',
+          message: 'Test message',
+        }),
+      };
+
+      const response = await handler(event, mockContext, mockSESClient, mockBedrockClient, mockDynamoClient);
+
+      expect(response.statusCode).toBe(200);
+      expect(mockSESClient.send).toHaveBeenCalledTimes(1);
+      expect(mockBedrockClient.send).not.toHaveBeenCalled(); // No spam detection
+      expect(mockDynamoClient.send).not.toHaveBeenCalled(); // No logging
+    });
+    
+    it('should not include classification in email when spam detection is disabled', async () => {
+      const event = {
+        body: JSON.stringify({
+          name: 'John Doe',
+          email: 'john@example.com',
+          phone: '555-1234',
+          message: 'I have a question',
+        }),
+      };
+
+      const response = await handler(event, mockContext, mockSESClient, mockBedrockClient, mockDynamoClient);
+
+      expect(response.statusCode).toBe(200);
+      const sentCommand = mockSESClient.send.mock.calls[0][0];
+      const emailBody = sentCommand.input.Message.Body.Text.Data;
+      
+      expect(emailBody).not.toContain('Spam Detection:');
+      expect(emailBody).not.toContain('Classification:');
     });
   });
 });
