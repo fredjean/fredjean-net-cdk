@@ -389,11 +389,11 @@ export async function handler(event, context, sesClient, bedrockClient, dynamoCl
         failedOpen: classificationResult.failedOpen || false,
       });
 
-      // Block if high-confidence spam or gibberish
-      const isSpamOrGibberish = ['SPAM', 'GIBBERISH'].includes(classificationResult.classification);
+      // Block if high-confidence spam, sales, or gibberish
+      const shouldBlock = ['SPAM', 'SALES', 'GIBBERISH'].includes(classificationResult.classification);
       const isHighConfidence = classificationResult.confidence >= CONFIG.spamConfidenceThreshold;
       
-      if (isSpamOrGibberish && isHighConfidence) {
+      if (shouldBlock && isHighConfidence) {
         // Log blocked submission to DynamoDB
         const submissionId = await logBlockedSubmission(
           contactData,

@@ -120,7 +120,7 @@ describe('Contact Form Lambda - Spam Detection ENABLED', () => {
     expect(mockDynamoClient.send).not.toHaveBeenCalled(); // Not logged (below threshold)
   });
 
-  it('should send email for SALES classification (not blocked)', async () => {
+  it('should block high-confidence SALES and return 200 OK', async () => {
     const salesBedrockClient = {
       send: vi.fn().mockResolvedValue({
         body: new TextEncoder().encode(JSON.stringify({
@@ -142,8 +142,39 @@ describe('Contact Form Lambda - Spam Detection ENABLED', () => {
 
     const response = await handler(event, mockContext, mockSESClient, salesBedrockClient, mockDynamoClient);
 
+    expect(response.statusCode).toBe(200); // Always 200 OK
+    expect(JSON.parse(response.body)).toEqual({
+      message: 'Thank you for contacting us! Your message has been sent.',
+      success: true,
+    });
+    expect(mockSESClient.send).not.toHaveBeenCalled(); // Email NOT sent
+    expect(mockDynamoClient.send).toHaveBeenCalledTimes(1); // Logged to DynamoDB
+  });
+
+  it('should send email for low-confidence SALES', async () => {
+    const lowConfidenceSalesBedrockClient = {
+      send: vi.fn().mockResolvedValue({
+        body: new TextEncoder().encode(JSON.stringify({
+          content: [{
+            text: '{"classification": "SALES", "confidence": 0.6, "reason": "Possible sales pitch"}'
+          }]
+        })),
+      }),
+    };
+
+    const event = {
+      body: JSON.stringify({
+        name: 'Business Person',
+        email: 'contact@business.com',
+        phone: '555-7777',
+        message: 'I have a business proposition',
+      }),
+    };
+
+    const response = await handler(event, mockContext, mockSESClient, lowConfidenceSalesBedrockClient, mockDynamoClient);
+
     expect(response.statusCode).toBe(200);
-    expect(mockSESClient.send).toHaveBeenCalledTimes(1); // Email sent (SALES not blocked)
+    expect(mockSESClient.send).toHaveBeenCalledTimes(1); // Email sent (below threshold)
     expect(mockDynamoClient.send).not.toHaveBeenCalled(); // Not logged
     
     // Subject should have sus emoji
